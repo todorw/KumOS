@@ -57,7 +57,12 @@ elf_load_result_t elf_load_disk(const char *filename);
 
 int elf_validate_disk(const char *filename);
 
-int elf_spawn(const char *name, elf_load_result_t *res);
+#define ELF_MAX_ARGS    15
+#define ELF_MAX_ARG_LEN 128
+
+int      elf_run(const char *fname, int argc, const char *const *argv, int tty);
+uint32_t elf_user_stack(int argc, const char *const *argv);
+uint32_t elf_user_frame(uint32_t *kstack_top, uint32_t entry, uint32_t user_esp);
 
 int elf_validate(const elf32_hdr_t *hdr);
 

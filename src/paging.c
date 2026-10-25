@@ -487,208 +487,65 @@ uint32_t paging_root_dir(void) {
     return (uint32_t)page_dir;
 }
 
-/* See paging_clone_dir()'s comment. Defaults to the full PDE1 range
-   (unbounded, matching the pre-round-28 behavior) until
-   paging_set_pde1_clone_bound() narrows it. */
-static uint32_t pde1_clone_start = 0x00400000;
-static uint32_t pde1_clone_end   = 0x00800000;
+#define PDE_USER_CODE  PAGE_DIR_IDX(USER_CODE_BASE)
+#define PDE_USER_STACK PAGE_DIR_IDX(ELF_USER_STACK_TOP - 1)
 
-void paging_set_pde1_clone_bound(uint32_t start, uint32_t end) {
-    if (start < 0x00400000) start = 0x00400000;
-    if (end   > 0x00800000) end   = 0x00800000;
-    if (start >= end) return;
-    pde1_clone_start = start;
-    pde1_clone_end   = end;
+static int pde_is_private(int i) {
+    return i == PDE_USER_CODE || i == PDE_USER_STACK;
+}
+
+uint32_t paging_new_dir(void) {
+    uint32_t phys = pmm_alloc();
+    if (!phys) return 0;
+    uint32_t *dir = (uint32_t *)phys;
+    for (int i = 0; i < PAGE_ENTRIES; i++)
+        dir[i] = (i < 256 && !pde_is_private(i)) ? page_dir[i] : 0;
+    return phys;
+}
+
+static uint32_t clone_table(uint32_t src_tbl_phys) {
+    uint32_t *src = (uint32_t *)src_tbl_phys;
+    uint32_t dst_phys = pmm_alloc();
+    if (!dst_phys) return 0;
+    uint32_t *dst = (uint32_t *)dst_phys;
+    kmemset(dst, 0, PAGE_SIZE);
+    for (int j = 0; j < PAGE_ENTRIES; j++) {
+        if (!(src[j] & PAGE_PRESENT)) continue;
+        uint32_t frame = pmm_alloc();
+        if (!frame) {
+            for (int k = 0; k < j; k++) if (dst[k]) pmm_free(dst[k] & ~0xFFF);
+            pmm_free(dst_phys);
+            return 0;
+        }
+        kmemcpy((void *)frame, (void *)(src[j] & ~0xFFF), PAGE_SIZE);
+        dst[j] = frame | (src[j] & 0xFFF);
+    }
+    return dst_phys;
 }
 
 uint32_t paging_clone_dir(void) {
-    uint32_t new_dir_phys = pmm_alloc();
-    if (!new_dir_phys) return 0;
-    uint32_t *new_dir = (uint32_t *)new_dir_phys;
-    kmemset(new_dir, 0, PAGE_SIZE);
-
+    uint32_t *cur = (uint32_t *)current_dir_phys();
+    if ((uint32_t)cur == (uint32_t)page_dir) return 0;
+    uint32_t new_phys = paging_new_dir();
+    if (!new_phys) return 0;
+    uint32_t *dir = (uint32_t *)new_phys;
     for (int i = 0; i < PAGE_ENTRIES; i++) {
-        if (!page_dir[i]) continue;
-        /* PDE 1 (virt 0x400000-0x7FFFFF) is where every user ELF loads
-           (linker.ld: -Ttext=0x400000) - it can NOT be aliased like the
-           rest of the sub-1GB kernel range, or two processes' code ends up
-           sharing the exact same physical page table entries and each
-           exec()/fork() corrupts whichever other process is still running
-           there. Give it the same full deep-copy treatment as user stack
-           (i>=256) instead of a raw pointer share.
-
-           PDE 255 needs the exact same treatment and was missed: the user
-           stack is ELF_USER_STACK_TOP=0x40000000 (exactly 1GB) growing
-           DOWN, so it actually lives at virt 0x3FFFC000-0x3FFFFFFF - PDE
-           255 (1GB / 4MB - 1), one short of the ">=256" boundary this
-           function assumed was "the private per-process range". Real,
-           reproducible bug this caused: fork() alone (child never touching
-           its stack pages beyond what it inherited) happened not to
-           corrupt anything since parent and child just shared the same
-           physical stack pages read-mostly - but execve() unconditionally
-           remaps fresh stack pages (paging_map() + zeroing) into whatever
-           PDE 255 points to, and since it was ALIASED (shared pointer to
-           the SAME page table as the parent's), a forked child that
-           execve()'d silently overwrote the PARENT's live stack mappings
-           out from under it. Confirmed with a hardware watchpoint: kush's
-           own saved-return-address stack slot flipped from a valid value
-           to 0 at the exact moment its execve()'d child (hello.elf)
-           zeroed its own fresh stack page - explains the long-standing
-           "return to ring3 after waitpid corrupts" bug byte-for-byte
-           (kush's own code was still fully correct and its iret frame was
-           always intact; its *stack contents* underneath got silently
-           swapped out by an unrelated process). */
-        if (i < 256 && i != 1 && i != 255) {
-            new_dir[i] = page_dir[i];
-        } else if (i == 1 || i == 255) {
-            /* This deep-copies page_dir[1]/[255] (the GLOBAL template -
-               shared by kush and the GUI, both of which run with
-               page_dir_phys==0), which a freshly fork()'d child genuinely
-               needs: it briefly resumes at the PARENT's own EIP (sc_fork()
-               built its initial stack from the parent's own captured
-               registers) before it gets around to calling execve() itself,
-               so its PDE1 has to have the parent's real code present -
-               tried making this table start empty instead and it reliably
-               page-faulted the instant a forked child tried to resume,
-               confirming this.
-
-               Root cause of the long-open "GUI corrupts near the border"
-               report (round 20/26/27), found in round 28 via a hardware
-               watchpoint: this used to scan and copy all 1024 entries of
-               whatever page_dir[1] happened to have present, which -
-               because paging_init() identity-maps ALL physical RAM at
-               boot - is essentially every present entry, not "one
-               process's few pages". Every fork() cloned the lot, and the
-               sheer number of pmm_alloc() calls that took made a
-               collision with an unrelated vmalloc() allocation (confirmed
-               live: gui.c's desktop_cache) a near-certainty.
-
-               The tempting fix - unmap+pmm_free the part of PDE1 nothing
-               currently needs, right before a fresh image loads over it -
-               was tried and immediately crashed: those frames are ALSO
-               the kernel's own general-purpose identity-mapped pool
-               (pmm_alloc() can hand any of them to ANY subsystem for ANY
-               purpose, and the codebase-wide convention of treating its
-               return value as a directly-dereferenceable pointer depends
-               on that mapping always being there) - confirmed live with a
-               hardware breakpoint: the very next pmm_alloc() call handed
-               back a frame this had just unmapped, and a kmemset() into
-               it via its own identity address faulted instantly.
-
-               Fixed here instead by bounding what gets copied FROM the
-               global template in the first place: pde1_clone_start/end
-               default to the full range (unbounded, matching the old
-               behavior) until paging_set_pde1_clone_bound() narrows them
-               to kush's own real load extent right after its one-time
-               boot load (see kernel.c) - nothing here ever unmaps
-               anything, it just stops copying page_dir[1] entries that
-               were only ever boot-time identity-map filler kush never
-               touched. PDE255 gets the same treatment for free: the real
-               user stack is always the same fixed 4 pages
-               (ELF_USER_STACK_TOP - ELF_USER_STACK_SIZE) regardless of
-               which process it belongs to, and - unlike PDE1's range -
-               that whole address range sits above all physical RAM, so
-               there's no identity-mapping ambiguity to worry about
-               either way.
-
-               One more wrinkle bounding PDE1 exposed (also found live
-               with a hardware breakpoint, same session, and hit again in
-               elf_load_mem()'s own segment loading and every ring-3 stack
-               setup before landing on this fix): this function's OWN
-               bookkeeping frames (the new directory page, the new
-               PDE1/255 table page, each individually cloned page below)
-               are pmm_alloc()'d and immediately kmemset/kmemcpy'd via
-               straight identity access, while the CALLER's directory -
-               not necessarily the one being built here - is still the
-               one active. pmm_alloc() itself now refuses to ever hand
-               back a frame from inside PDE1's own range for exactly this
-               reason (see its comment) - fixed once, centrally, rather
-               than auditing every pmm_alloc()-then-kmemset() call site in
-               the codebase for the same footgun. */
-            uint32_t tbl_phys = page_dir[i] & ~0xFFF;
-            uint32_t *src_tbl = (uint32_t *)tbl_phys;
-            uint32_t new_tbl_phys = pmm_alloc();
-            if (!new_tbl_phys) { pmm_free(new_dir_phys); return 0; }
-            uint32_t *new_tbl = (uint32_t *)new_tbl_phys;
-            kmemset(new_tbl, 0, PAGE_SIZE);
-            int j_start = 0, j_end = PAGE_ENTRIES;
-            if (i == 1) {
-                j_start = (pde1_clone_start - 0x00400000) / PAGE_SIZE;
-                j_end   = (pde1_clone_end   - 0x00400000 + PAGE_SIZE - 1) / PAGE_SIZE;
-                if (j_start < 0) j_start = 0;
-                if (j_end > PAGE_ENTRIES) j_end = PAGE_ENTRIES;
-            } else {
-                j_start = PAGE_ENTRIES - (ELF_USER_STACK_SIZE / PAGE_SIZE);
-            }
-            for (int j = j_start; j < j_end; j++) {
-                if (!src_tbl[j]) continue;
-                uint32_t phys = src_tbl[j] & ~0xFFF;
-                uint32_t flags = src_tbl[j] & 0xFFF;
-                uint32_t new_phys = pmm_alloc();
-                if (!new_phys) continue;
-                kmemcpy((void *)new_phys, (void *)phys, PAGE_SIZE);
-                new_tbl[j] = new_phys | flags;
-            }
-            new_dir[i] = new_tbl_phys | (page_dir[i] & 0xFFF);
-        }
-        /* Anything else >= 256 (never PDE 1 or 255) is left absent in the
-           new directory entirely - neither aliased nor copied. In practice
-           the only thing that ever ends up there is gui.c's VBE linear
-           framebuffer mapping: set_vbe_mode() calls paging_map() while
-           task 0 (the GUI/kernel task, which always runs directly on this
-           same global page_dir - see sched.c's page_dir_phys==0 case) is
-           current, so the framebuffer's own PDE (index ~1012 for a typical
-           QEMU std-vga BAR) ends up sitting in THIS template even though
-           it has nothing to do with any user process. Before this fix, the
-           old blanket "i>=256 is always private, deep-copy it" rule swept
-           that PDE up too: every fork()/execve() anywhere in the OS, once
-           the GUI had started, silently deep-copied the live 3MB
-           framebuffer into a private throwaway mapping, and freed it again
-           on that process's own exit via paging_free_user() below. Found
-           while chasing the long-open, hard-to-reproduce "GUI corrupts
-           near the border" report (round 20/26) - `crond.elf &` then
-           `exit` to the GUI reliably paints RGB static over the desktop/
-           icon column within seconds of crond's self-exec (into
-           sysinfo.elf), and this PDE was genuinely being cloned/freed at
-           exactly that moment. But verified live with this fix alone in
-           place that it is NOT the report's actual cause: the same
-           corruption still reproduces with this path confirmed no longer
-           touching the framebuffer's PDE at all. It's a real, independent
-           correctness bug regardless (a user process has no legitimate
-           reason to inherit a mapping of the video driver's own device
-           memory, and copying 3MB of it on every fork/exec was pure
-           waste) - kept fixed on its own merits. Root cause of the visual
-           corruption is still open; see gui_is_active()'s comment in
-           gui.c for the other real-but-not-it bug found in the same
-           investigation. */
+        if (!pde_is_private(i) || !(cur[i] & PAGE_PRESENT)) continue;
+        uint32_t tbl = clone_table(cur[i] & ~0xFFF);
+        if (!tbl) { paging_free_user(new_phys); return 0; }
+        dir[i] = tbl | (cur[i] & 0xFFF);
     }
-    return new_dir_phys;
+    return new_phys;
 }
 
 void paging_free_user(uint32_t dir_phys) {
     uint32_t *dir = (uint32_t *)dir_phys;
     for (int i = 0; i < PAGE_ENTRIES; i++) {
-        /* Only PDE 1 (user code) and PDE 255 (user stack) are ever privately
-           owned by a process directory now - see paging_clone_dir(), which
-           no longer gives new directories a private copy of anything else
-           >= 256 (that used to sweep up the GUI's own framebuffer PDE).
-           Skipping everything else here isn't just tidiness: this dir[i]
-           could in principle still carry a raw alias into shared/device
-           memory from elsewhere, and blindly pmm_free()-ing whatever it
-           points at would be freeing memory this directory never owned. */
-        if (i != 1 && i != 255) continue;
-        if (!dir[i]) continue;
-        uint32_t tbl_phys = dir[i] & ~0xFFF;
-        uint32_t *tbl = (uint32_t *)tbl_phys;
-        for (int j = 0; j < PAGE_ENTRIES; j++) {
-            if (tbl[j]) pmm_free(tbl[j] & ~0xFFF);
-        }
-        pmm_free(tbl_phys);
+        if (!pde_is_private(i) || !(dir[i] & PAGE_PRESENT)) continue;
+        uint32_t *tbl = (uint32_t *)(dir[i] & ~0xFFF);
+        for (int j = 0; j < PAGE_ENTRIES; j++)
+            if (tbl[j] & PAGE_PRESENT) pmm_free(tbl[j] & ~0xFFF);
+        pmm_free(dir[i] & ~0xFFF);
     }
     pmm_free(dir_phys);
-}
-
-void paging_copy_user_range(uint32_t src_dir, uint32_t dst_dir,
-                             uint32_t start, uint32_t end) {
-    (void)src_dir; (void)dst_dir; (void)start; (void)end;
 }

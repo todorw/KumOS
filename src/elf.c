@@ -110,64 +110,104 @@ int elf_validate_disk(const char *filename) {
     return elf_validate((const elf32_hdr_t *)img);
 }
 
-static void elf_placeholder(void) {
-    for (;;) __asm__ volatile ("hlt");
-}
+uint32_t elf_user_stack(int argc, const char *const *argv) {
+    uint32_t top  = ELF_USER_STACK_TOP;
+    uint32_t base = top - ELF_USER_STACK_SIZE;
 
-int elf_spawn(const char *name, elf_load_result_t *res) {
-    if (!res || res->error != 0) return -1;
-
-    uint32_t stack_top  = ELF_USER_STACK_TOP;
-    uint32_t stack_base = stack_top - ELF_USER_STACK_SIZE;
-
-    for (uint32_t va = stack_base; va < stack_top; va += PAGE_SIZE) {
-        if (!paging_is_mapped(va)) {
-            uint32_t phys = pmm_alloc();
-            if (!phys) return -1;
-            kmemset((void *)phys, 0, PAGE_SIZE);
-            paging_map(va, phys, PAGE_WRITE | PAGE_USER);
-        }
+    paging_unmap_range(base, top);
+    for (uint32_t va = base; va < top; va += PAGE_SIZE) {
+        uint32_t phys = pmm_alloc();
+        if (!phys) return 0;
+        kmemset((void *)phys, 0, PAGE_SIZE);
+        paging_map(va, phys, PAGE_WRITE | PAGE_USER);
     }
 
-    uint32_t *kstack = kmalloc(SCHED_STACK_SIZE);
-    if (!kstack) return -1;
+    if (argc < 0) argc = 0;
+    if (argc > ELF_MAX_ARGS) argc = ELF_MAX_ARGS;
+    uint32_t ptrs[ELF_MAX_ARGS + 1];
+    uint32_t sp = top;
+    for (int i = argc - 1; i >= 0; i--) {
+        uint32_t len = (uint32_t)kstrlen(argv[i]) + 1;
+        if (len > ELF_MAX_ARG_LEN) len = ELF_MAX_ARG_LEN;
+        sp -= len;
+        kmemcpy((void *)sp, argv[i], len - 1);
+        *(char *)(sp + len - 1) = 0;
+        ptrs[i] = sp;
+    }
+    ptrs[argc] = 0;
+    sp &= ~3u;
+    for (int i = argc; i >= 0; i--) { sp -= 4; *(uint32_t *)sp = ptrs[i]; }
+    uint32_t argv_addr = sp;
+    sp -= 4; *(uint32_t *)sp = argv_addr;
+    sp -= 4; *(uint32_t *)sp = (uint32_t)argc;
+    sp -= 4; *(uint32_t *)sp = 0;
+    return sp;
+}
 
-    uint32_t *sp = (uint32_t *)((uint8_t *)kstack + SCHED_STACK_SIZE);
-
-    uint32_t user_esp = stack_top - 4;
-
+uint32_t elf_user_frame(uint32_t *kstack_top, uint32_t entry, uint32_t user_esp) {
     extern void user_entry_trampoline(void);
-
+    uint32_t *sp = kstack_top;
     *--sp = USER_DS;
     *--sp = user_esp;
     *--sp = 0x202;
     *--sp = USER_CS;
-    *--sp = res->entry;
-
+    *--sp = entry;
     for (int i = 0; i < 8; i++) *--sp = 0;
-
     *--sp = USER_DS;
-
     *--sp = (uint32_t)user_entry_trampoline;
+    *--sp = 0x202;
+    for (int i = 0; i < 4; i++) *--sp = 0;
+    return (uint32_t)sp;
+}
 
-    *--sp = 0x202; /* eflags for switch_context's popfd, IF=1 */
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
-    *--sp = 0;
+static void elf_placeholder(void) {
+    for (;;) __asm__ volatile ("hlt");
+}
 
-    int pid = sched_spawn(name, elf_placeholder, 0);
-    if (pid < 0) { kfree(kstack); return -1; }
+static inline uint32_t elf_irq_save(void) {
+    uint32_t f;
+    __asm__ volatile ("pushfl; pop %0; cli" : "=r"(f) :: "memory");
+    return f;
+}
+static inline void elf_irq_restore(uint32_t f) {
+    __asm__ volatile ("push %0; popfl" :: "r"(f) : "memory");
+}
 
+int elf_run(const char *fname, int argc, const char *const *argv, int tty) {
+    uint32_t fl = elf_irq_save();
+    int pid = -1;
+    uint32_t dir = 0, old = paging_current_dir();
+    uint32_t *kstack = 0;
+
+    const uint8_t *img; uint32_t len;
+    if (elf_fetch(fname, &img, &len) != 0) goto out;
+    dir = paging_new_dir();
+    if (!dir) goto out;
+    kstack = kmalloc(SCHED_STACK_SIZE);
+    if (!kstack) goto out;
+
+    paging_switch(dir);
+    elf_load_result_t r = elf_load_mem(img, len);
+    uint32_t user_esp = r.error == 0 ? elf_user_stack(argc, argv) : 0;
+    paging_switch(old);
+    if (!user_esp) goto out;
+
+    const char *name = argc > 0 ? argv[0] : fname;
+    pid = sched_spawn(name, elf_placeholder, 0);
+    if (pid < 0) goto out;
     task_t *t = sched_get_task(pid);
-    if (t) {
-
-        if (t->stack) kfree(t->stack);
-        t->stack      = kstack;
-        t->stack_size = SCHED_STACK_SIZE;
-        t->esp        = (uint32_t)sp;
-    }
-
+    kfree(t->stack);
+    t->stack         = kstack;
+    t->stack_size    = SCHED_STACK_SIZE;
+    t->esp           = elf_user_frame((uint32_t *)((uint8_t *)kstack + SCHED_STACK_SIZE), r.entry, user_esp);
+    t->page_dir_phys = dir;
+    if (tty >= 0) t->tty = tty;
+    kstack = 0;
+    dir = 0;
+out:
+    if (kstack) kfree(kstack);
+    if (dir) paging_free_user(dir);
+    elf_irq_restore(fl);
     return pid;
 }
 

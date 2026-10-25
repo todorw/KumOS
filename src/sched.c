@@ -109,6 +109,8 @@ int sched_spawn(const char *name, void (*entry)(void), int kum_level) {
     tasks[slot].exit_code  = 0;
     tasks[slot].kum_level  = kum_level;
     tasks[slot].parent_pid = tasks[current_idx].pid;
+    tasks[slot].tty        = tasks[current_idx].tty;
+    tasks[slot].page_dir_phys = 0;
     kstrcpy(tasks[slot].name, name);
     task_setup_stack(&tasks[slot], entry);
 

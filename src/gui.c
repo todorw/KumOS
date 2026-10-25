@@ -1116,14 +1116,9 @@ static void term_exec_output(char c) {
     }
 }
 
-static void term_run_elf(elf_load_result_t *r, const char *name) {
-    if (r->error != 0) {
-        char line[TERM_COLS+1];
-        kstrcpy(line, "bad ELF, error "); kitoa((uint32_t)(-r->error), line+kstrlen(line), 10);
-        term_puts_c(line, TERM_FG_ERR);
-        return;
-    }
-    int pid = elf_spawn(name, r);
+static void term_run_elf(const char *fname, const char *name) {
+    const char *argv[1] = { name };
+    int pid = elf_run(fname, 1, argv, -1);
     if (pid < 0) { term_puts_c("spawn failed", TERM_FG_ERR); return; }
 
     term_exec_linelen = 0;
@@ -1188,7 +1183,7 @@ static int term_calc(const char *e) {
    like it always has, just redirected off real 0xB8000 while the GUI
    owns the display). Real coreutils, real pipes, real job control, the
    actual boot shell - not a second, smaller command set. */
-void gui_set_boot_terminal_pid(int pid) { boot_term_pid = pid; }
+void gui_set_terminal_pid(int tty, int pid) { if (tty == 0) boot_term_pid = pid; }
 
 static int boot_term_alive(void) {
     if (boot_term_pid < 0) return 0;
@@ -1359,16 +1354,12 @@ static void term_exec(const char *cmd) {
         int i = pkg_find_index(cmd+4);
         if (i < 0) { term_puts_c("Unknown program (try 'pkg install' first)", TERM_FG_ERR); }
         else {
-            const uint8_t *start, *end;
-            pkg_blob_at(i, &start, &end);
-            elf_load_result_t r = elf_load_mem(start, (uint32_t)(end - start));
-            term_run_elf(&r, cmd+4);
+            term_run_elf(pkg_fname_at(i), cmd+4);
         }
     } else if (kstartswith(cmd,"exec ")) {
         if (!fat12_mounted()) { term_puts_c("No disk mounted", TERM_FG_ERR); }
         else {
-            elf_load_result_t r = elf_load_disk(cmd+5);
-            term_run_elf(&r, cmd+5);
+            term_run_elf(cmd+5, cmd+5);
         }
     } else if (kstrcmp(cmd,"ls")==0) {
         if (!fat12_mounted()) {
@@ -3007,8 +2998,8 @@ void gui_run(void) {
                 /* kush exited (or never started) and this is its window -
                    any keystroke here relaunches it rather than leaving a
                    dead, frozen terminal as the GUI's one and only shell. */
-                elf_load_result_t r = elf_load_disk("KUSH.ELF");
-                if (r.error == 0) boot_term_pid = elf_spawn("kush", &r);
+                const char *kush_argv[1] = { "kush" };
+                boot_term_pid = elf_run("KUSH.ELF", 1, kush_argv, 0);
             } else if (key == 27) {
                 if (ctxmenu_open) ctxmenu_open = 0;
                 else if (launcher_open) launcher_open = 0;

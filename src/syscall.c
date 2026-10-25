@@ -231,111 +231,42 @@ static uint32_t sc_execve(uint32_t path_addr, uint32_t argv_addr, uint32_t envp_
     if (!ustr(path_addr)) return (uint32_t)-1;
     const char *path = (const char *)path_addr;
 
-    char upper[64]; int i=0;
-    while(path[i]&&i<63){char ch=path[i];if(ch>='a'&&ch<='z')ch-=32;upper[i++]=ch;}
-    upper[i]=0;
-    if(!kstrchr(upper,'.')) { kstrcat(upper,".ELF"); }
+    char upper[64]; int i = 0;
+    while (path[i] && i < 59) { char ch = path[i]; if (ch >= 'a' && ch <= 'z') ch -= 32; upper[i++] = ch; }
+    upper[i] = 0;
+    if (!kstrchr(upper, '.')) kstrcat(upper, ".ELF");
 
-    /* Header-only pre-check (no mapping side effects) - the old code here
-       called the real elf_load_disk() just to see if the target existed,
-       which maps+copies into whatever directory is CURRENTLY active (the
-       caller's own, still-running one) and overwrites it in place, since
-       every user ELF loads at the same vaddr (linker.ld -Ttext=0x400000).
-       That clobbered the caller's own code out from under itself before
-       we'd even committed to replacing it. */
     if (elf_validate_disk(upper) != 0) return (uint32_t)-1;
 
-    /* argv_addr points into the CALLER's (about-to-be-replaced) address
-       space - must be read before that address space goes away below, or
-       it's read back through the wrong (fresh, cloned-from-shared-template)
-       page tables, which don't have the old user stack mapped at all. Only
-       snapshotting the pointer VALUES here (nothing downstream of execve
-       ever dereferences these as strings, just copies the pointers around
-       on fork()), so no need to copy the actual argument text anywhere. */
-    char *argv_snapshot[16]; int argc_snapshot = 0;
+    static char argbuf[ELF_MAX_ARGS][ELF_MAX_ARG_LEN];
+    const char *kargv[ELF_MAX_ARGS];
+    int argc = 0;
     if (argv_addr) {
-        char **argv = (char **)argv_addr;
-        /* validated one pointer-slot at a time rather than the whole 16-slot
-           range up front, so a legitimately short/small argv array isn't
-           rejected just because slot 16 would have run off the caller's
-           mapping */
-        while (argc_snapshot < 15 &&
-               ubuf_r(argv_addr + (uint32_t)argc_snapshot * sizeof(char*), sizeof(char*)) &&
-               argv[argc_snapshot]) {
-            argv_snapshot[argc_snapshot] = argv[argc_snapshot];
-            argc_snapshot++;
+        while (argc < ELF_MAX_ARGS && ubuf_r(argv_addr + (uint32_t)argc * 4, 4)) {
+            uint32_t s_addr = ((uint32_t *)argv_addr)[argc];
+            if (!s_addr) break;
+            if (!paging_user_str_ok(s_addr, ELF_MAX_ARG_LEN)) return (uint32_t)-1;
+            kstrncpy_safe(argbuf[argc], (const char *)s_addr, ELF_MAX_ARG_LEN);
+            kargv[argc] = argbuf[argc];
+            argc++;
         }
     }
-    argv_snapshot[argc_snapshot] = 0;
+    if (argc == 0) { kstrncpy_safe(argbuf[0], upper, ELF_MAX_ARG_LEN); kargv[0] = argbuf[0]; argc = 1; }
 
     task_t *cur = sched_current();
-
-    /* Build and switch to the replacement directory BEFORE freeing the
-       old one - the old one is still the LIVE CR3 at this point. Freeing
-       it first (the old order here) returned its physical pages to the
-       allocator while the CPU was still actively running on them; the
-       very next pmm_alloc() (for the new directory/page tables built two
-       lines later) could then hand back one of those same pages, and
-       zeroing/overwriting it out from under the still-current mapping is
-       exactly the kind of corruption that made a *different*, unrelated
-       task (whichever was next to touch that physical page) crash with a
-       nonsensical-looking EIP/ESP - this is what was actually behind the
-       long-standing "return to ring3 after waitpid corrupts" bug, not the
-       scheduler/switch_context mechanism itself. */
-    uint32_t old_dir = cur->page_dir_phys;
-    uint32_t new_dir = paging_clone_dir();
+    uint32_t new_dir = paging_new_dir();
     if (!new_dir) return (uint32_t)-1;
+    uint32_t old_dir = cur->page_dir_phys;
     cur->page_dir_phys = new_dir;
     paging_switch(new_dir);
     if (old_dir) paging_free_user(old_dir);
 
-    elf_load_result_t r2 = elf_load_disk(upper);
-    /* Was paging_switch(0) here - CR3=0 is not a valid directory and would
-       triple-fault the instant anything touched memory. new_dir (already
-       switched to above) is a real, valid, freshly-cloned directory, just
-       missing the target's code - leaving CR3 there is what actually lets
-       this error return make it back to the caller instead of crashing. */
-    if (r2.error != 0) return (uint32_t)-1;
+    elf_load_result_t r = elf_load_disk(upper);
+    uint32_t user_esp = r.error == 0 ? elf_user_stack(argc, kargv) : 0;
+    if (!user_esp) sched_exit_code(127);
 
-    kstrcpy(cur->name, upper);
-    cur->argc = argc_snapshot;
-    for (int j = 0; j < argc_snapshot; j++) cur->argv[j] = argv_snapshot[j];
-    cur->argv[cur->argc] = 0;
-
-    uint32_t user_stack_top = 0x40000000;
-    uint32_t user_esp       = user_stack_top - 4;
-
-    /* PDE255 (this stack range) was deep-copied by paging_clone_dir() same
-       as PDE1 - reclaim it for the same reason, plus it closes a related
-       latent bug: the "already mapped, leave it" check below used to
-       quietly reuse the PARENT's copied-over stack pages as-is (still
-       containing the parent's stack contents) instead of the fresh zeroed
-       page a new process's stack should start with. */
-    paging_unmap_range(user_stack_top - 16384, user_stack_top);
-
-    for (uint32_t va = user_stack_top - 16384; va < user_stack_top; va += PAGE_SIZE) {
-        if (!paging_is_mapped(va)) {
-            uint32_t phys = pmm_alloc();
-            if (phys) { kmemset((void*)phys,0,PAGE_SIZE); paging_map(va,phys,PAGE_WRITE|PAGE_USER); }
-        }
-    }
-
-    uint32_t *sp = (uint32_t *)(uintptr_t)user_esp;
-    uint32_t *ksp = (uint32_t *)((uint8_t *)cur->stack + cur->stack_size);
-
-    *--ksp = 0x23;
-    *--ksp = user_esp;
-    *--ksp = 0x202;
-    *--ksp = 0x1B;
-    *--ksp = r2.entry;
-    for(int j=0;j<8;j++) *--ksp = 0;
-    *--ksp = 0x23;
-    *--ksp = (uint32_t)(uintptr_t)user_entry_trampoline;
-    *--ksp = 0x202; /* eflags for switch_context's popfd, IF=1 */
-    *--ksp = 0; *--ksp = 0; *--ksp = 0; *--ksp = 0;
-
-    cur->esp = (uint32_t)(uintptr_t)ksp;
-    (void)sp;
+    kstrncpy_safe(cur->name, kargv[0], sizeof(cur->name));
+    cur->esp = elf_user_frame((uint32_t *)((uint8_t *)cur->stack + cur->stack_size), r.entry, user_esp);
 
     uint32_t discard_esp;
     switch_context(&discard_esp, cur->esp);
@@ -357,54 +288,39 @@ static uint32_t sc_fork(uint32_t a, uint32_t b, uint32_t c) {
     if (!child_kstack) { paging_free_user(child_dir); return (uint32_t)-1; }
 
     int child_pid = sched_spawn(parent->name, 0, parent->kum_level);
-    if (child_pid < 0) {
+    task_t *child = child_pid < 0 ? 0 : sched_get_task(child_pid);
+    if (!child) {
         kfree(child_kstack);
         paging_free_user(child_dir);
         return (uint32_t)-1;
     }
 
-    task_t *child = sched_get_task(child_pid);
-    if (!child) return (uint32_t)-1;
-
     child->parent_pid    = parent->pid;
     child->page_dir_phys = child_dir;
-    kstrcpy(child->cwd,   parent->cwd);
-    child->argc          = parent->argc;
-    for(int j=0;j<parent->argc&&j<15;j++) child->argv[j]=parent->argv[j];
+    kstrcpy(child->cwd, parent->cwd);
+    signal_fork(parent, child);
 
-    if (child->stack) kfree(child->stack);
+    kfree(child->stack);
     child->stack      = child_kstack;
     child->stack_size = SCHED_STACK_SIZE;
 
-    /* Build the exact stack shape switch_context()/user_entry_trampoline
-       expect for a task's first-ever resume (see sched_switch.asm):
-       4 dummy callee-saved regs + a fake return address into the
-       trampoline, which itself expects a DS value then a pusha-shaped
-       register block, then the CPU's own iret frame. The previous version
-       here only pushed 16 of the needed 19 words (no trampoline address
-       at all, and zeroed every register including EBP), which is why the
-       child crashed with an invalid-opcode fault the instant it resumed -
-       everything downstream was reading garbage. Using the parent's real
-       captured registers (g_cur_regs, snapshotted by isr128 at syscall
-       entry) means the child resumes at the same point as the parent,
-       with the same registers, except EAX=0 (the fork() return value). */
     uint32_t *sp = (uint32_t *)((uint8_t *)child_kstack + SCHED_STACK_SIZE);
     *--sp = pr->ss;
     *--sp = pr->useresp;
     *--sp = pr->eflags;
     *--sp = pr->cs;
     *--sp = pr->eip;
-    *--sp = 0;          /* EAX = 0 in the child */
+    *--sp = 0;
     *--sp = pr->ecx;
     *--sp = pr->edx;
     *--sp = pr->ebx;
-    *--sp = 0;          /* esp_dummy, ignored by popa */
+    *--sp = 0;
     *--sp = pr->ebp;
     *--sp = pr->esi;
     *--sp = pr->edi;
     *--sp = pr->ds;
     *--sp = (uint32_t)(uintptr_t)user_entry_trampoline;
-    *--sp = 0x202; /* eflags for switch_context's popfd, IF=1 */
+    *--sp = 0x202;
     *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
     child->esp = (uint32_t)(uintptr_t)sp;
 

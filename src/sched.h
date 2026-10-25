@@ -36,9 +36,8 @@ typedef struct {
     int          kum_level;
     uint32_t     page_dir_phys;
     char         cwd[128];
-    char        *argv[16];
-    int          argc;
     uint32_t     brk;
+    int          tty;
 } task_t;
 
 void    sched_init(void);

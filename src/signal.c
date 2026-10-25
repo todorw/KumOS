@@ -108,3 +108,7 @@ int signal_pending(void) {
     }
     return (proc_signals[idx].pending & ~proc_signals[idx].blocked) != 0;
 }
+
+void signal_fork(task_t *parent, task_t *child) {
+    (void)parent; (void)child;
+}

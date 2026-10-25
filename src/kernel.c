@@ -87,36 +87,6 @@ static void put_dec_pad(uint32_t v, int width) {
     vga_puts(buf);
 }
 
-static void draw_splash(void) {
-    vga_clear();
-    vga_fill_rect(0,0,80,25,' ',VGA_BLACK,VGA_BLUE);
-    vga_fill_rect(10,3,60,19,' ',VGA_WHITE,VGA_BLACK);
-    vga_draw_box(10,3,60,19,VGA_CYAN,VGA_BLACK);
-    vga_puts_at("  _  ___   _ __  __  ___  ____  ",23,5,VGA_CYAN,VGA_BLACK);
-    vga_puts_at(" | |/ / | | |  \\/  |/ _ \\/ ___| ",23,6,VGA_CYAN,VGA_BLACK);
-    vga_puts_at(" | ' /| | | | |\\/| | | | \\___ \\ ",23,7,VGA_CYAN,VGA_BLACK);
-    vga_puts_at(" | . \\| |_| | |  | | |_| |___) |",23,8,VGA_CYAN,VGA_BLACK);
-    vga_puts_at(" |_|\\_\\\\___/|_|  |_|\\___/|____/ ",23,9,VGA_CYAN,VGA_BLACK);
-    vga_puts_at("    Minimal x86 OS  v1.2          ",22,11,VGA_YELLOW,VGA_BLACK);
-    vga_puts_at("  GDT|IDT|PIT|IRQ|Sched|Paging   ",22,12,VGA_LIGHT_GREY,VGA_BLACK);
-
-    const char *msgs[] = {
-        "  [ OK ] GDT  Setting up descriptor tables...",
-        "  [ OK ] IDT  Installing interrupt handlers...",
-        "  [ OK ] PAG  Paging enabled  (CR0.PG=1, 16MB mapped)...",
-        "  [ OK ] PIC  Remapping 8259 controller...",
-        "  [ OK ] PIT  Timer at 100 Hz via IRQ0...",
-        "  [ OK ] KBD  IRQ1 keyboard handler active...",
-        "  [ OK ] SCH  Preemptive scheduler started...",
-        "  [ .. ] SHL  Launching kshell...",
-    };
-    for (int i = 0; i < 8; i++) {
-        vga_puts_at(msgs[i], 12, 14+i, i<7?VGA_GREEN:VGA_YELLOW, VGA_BLACK);
-        for (volatile int d = 0; d < 2000000; d++);
-    }
-    for (volatile int d = 0; d < 5000000; d++);
-}
-
 static void print_prompt(void) {
     vga_color accent = kum_active ? VGA_LIGHT_RED : VGA_LIGHT_GREEN;
 
@@ -890,6 +860,15 @@ static void cmd_eformat(void) {
 
 static void dispatch(const char *line);
 
+static void run_and_wait(const char *fname, const char *name) {
+    const char *argv[1] = { name };
+    int pid = elf_run(fname, 1, argv, -1);
+    if (pid < 0) { kprintf("%s: could not start\n", name); return; }
+    int code = sched_waitpid(pid);
+    __asm__ volatile("sti");
+    kprintf("[%s exited with code %d]\n", name, code);
+}
+
 static void cmd_help(void) {
     vga_set_color(VGA_CYAN,VGA_BLACK);
     vga_puts("\n === KumOS Shell v1.1 ===\n\n");
@@ -1262,24 +1241,7 @@ static void dispatch(const char *line) {
         if (!pid) { vga_puts("Usage: kill <pid> [signal]\n"); }
         else { signal_send(pid, sig); kprintf("Sent signal %d to PID %d\n", sig, pid); }
     }
-    else if(kstrcmp(cmd,"kush")==0) {
-
-        vga_set_color(VGA_CYAN,VGA_BLACK);
-        vga_puts("Launching kush (userspace shell)...\n");
-        vga_set_color(VGA_WHITE,VGA_BLACK);
-        elf_load_result_t r = elf_load_disk("KUSH.ELF");
-        if (r.error == 0) {
-            int pid = elf_spawn("kush", &r);
-            if (pid >= 0) {
-                int code = sched_waitpid(pid);
-                __asm__ volatile("sti"); /* see the "wait" command's sched_waitpid() above */
-                kprintf("\n[kush exited with code %d]\n", code);
-            } else vga_puts("kush: spawn failed\n");
-        } else {
-            vga_puts("kush: KUSH.ELF not found on disk.\n");
-            vga_puts("Build it with: make user-programs\n");
-        }
-    }
+    else if(kstrcmp(cmd,"kush")==0) { run_and_wait("KUSH.ELF", "kush"); }
     else if(kstrcmp(cmd,"gui")==0) {
         vga_set_color(VGA_CYAN,VGA_BLACK);
         vga_puts("Switching to GUI mode (320x200)...\n");
@@ -1370,34 +1332,13 @@ static void dispatch(const char *line) {
     else if(kstrcmp(cmd,"erm")==0)   { cmd_erm(rest); }
     else if(kstrcmp(cmd,"eformat")==0){ cmd_eformat(); }
     else if(kstrcmp(cmd,"run")==0) {
-        if (!*rest) {
-            vga_set_color(VGA_YELLOW,VGA_BLACK);
-            vga_puts("  Available programs:\n");
-            vga_set_color(VGA_WHITE,VGA_BLACK);
-            for (int i = 0; i < pkg_count(); i++) {
-                vga_puts("    run "); vga_puts(pkg_name_at(i)); vga_putchar('\n');
-            }
+        int i = *rest ? pkg_find_index(rest) : -1;
+        if (i >= 0) run_and_wait(pkg_fname_at(i), rest);
+        else {
+            if (*rest) kprintf("run: unknown program '%s'\n", rest);
+            vga_puts("  Available programs:");
+            for (int j = 0; j < pkg_count(); j++) { vga_putchar(' '); vga_puts(pkg_name_at(j)); }
             vga_putchar('\n');
-        } else {
-            int i = pkg_find_index(rest);
-            if (i < 0) {
-                kprintf("run: unknown program '%s' - type 'run' to list\n", rest);
-            } else {
-                const uint8_t *start, *end;
-                pkg_blob_at(i, &start, &end);
-                elf_load_result_t r = elf_load_mem(start, (uint32_t)(end - start));
-                if (r.error == 0) {
-                    int pid = elf_spawn(rest, &r);
-                    if (pid >= 0) {
-                        kprintf("  Spawned '%s' as ring-3 process  PID=%d\n", rest, pid);
-                        int code = sched_waitpid(pid);
-                        __asm__ volatile("sti"); /* see the "wait" command's sched_waitpid() above */
-                        kprintf("  Process exited with code %d\n", code);
-                    } else vga_puts("run: failed to spawn process\n");
-                } else {
-                    kprintf("run: bad ELF (error %d)\n", r.error);
-                }
-            }
         }
     }
     else if(kstrcmp(cmd,"history")==0){
@@ -1429,27 +1370,8 @@ static void dispatch(const char *line) {
         vga_puts("\nSystem halted. Power off safely.\n");
         __asm__ volatile("cli; hlt"); }
     else if(kstrcmp(cmd,"exec")==0) {
-        if (!*rest) { vga_puts("Usage: exec <file.elf>\n"); }
-        else {
-            vga_set_color(VGA_CYAN,VGA_BLACK);
-            kprintf("Loading '%s'...\n", rest);
-            vga_set_color(VGA_WHITE,VGA_BLACK);
-            elf_load_result_t r = elf_load_disk(rest);
-            if (r.error == 0) {
-                kprintf("  entry=0x%x  range=0x%x..0x%x\n",r.entry,r.load_base,r.load_end);
-                int pid = elf_spawn(rest, &r);
-                if (pid >= 0) {
-                    kprintf("  Running as ring-3 PID=%d\n", pid);
-                    int code = sched_waitpid(pid);
-                    __asm__ volatile("sti"); /* see the "wait" command's sched_waitpid() above */
-                    kprintf("  Process exited with code %d\n", code);
-                } else vga_puts("  Spawn failed.\n");
-            } else {
-                const char *errs[]={"","bad magic","bad arch","OOM","disk error"};
-                kprintf("  Error %d: %s\n", r.error,
-                        (r.error>=-4&&r.error<=0)?errs[-r.error]:"?");
-            }
-        }
+        if (!*rest) vga_puts("Usage: exec <file.elf>\n");
+        else run_and_wait(rest, rest);
     }
     else if(kstrcmp(cmd,"elfinfo")==0) {
         if (!*rest) { vga_puts("Usage: elfinfo <file.elf>\n"); }
@@ -1570,62 +1492,17 @@ void kernel_main(uint32_t magic, multiboot_info_t *mbi) {
     serial_printf("[boot] Enabling interrupts...\r\n");
     __asm__ volatile ("sti");
 
-    draw_splash();
-    speaker_jingle();
+    const char *kush_argv[1] = { "kush" };
+    gui_set_terminal_pid(0, elf_run("KUSH.ELF", 1, kush_argv, 0));
+    serial_printf("[boot] GUI started\r\n");
+    gui_run();
+
     vga_clear();
     vga_goto(1, 0);
     draw_welcome_logo();
-
-    vga_set_color(VGA_CYAN,VGA_BLACK);
-    fs_file_t *motd = fs_find("motd.txt");
-    if (motd) vga_puts(motd->data);
     vga_set_color(VGA_DARK_GREY,VGA_BLACK);
-    kprintf("  v1.9  .  %u MB RAM  .  type 'help' to get started\n\n", total_mem_kb/1024);
-    serial_printf("[boot] Shell started. Type commands below.\r\n");
-    serial_printf("----------------------------------------\r\n");
+    kprintf("  Text console  .  %u MB RAM  .  type 'help', or 'gui' for the desktop\n\n", total_mem_kb/1024);
     vga_set_color(VGA_WHITE,VGA_BLACK);
-
-    /* Straight to the real userspace shell on boot, same code path as the
-       "kush" CLI command. Falls through to the GUI desktop if kush exits
-       (or KUSH.ELF is missing), then to the bare CLI loop below if the
-       GUI is also exited - each stage is just the next fallback. */
-    elf_load_result_t boot_r = elf_load_disk("KUSH.ELF");
-    if (boot_r.error == 0) {
-        /* kush runs on the GLOBAL directory (page_dir_phys==0, same as
-           the GUI) - its PDE1 table IS the boot-time full-RAM identity
-           map (paging_init()), not something private to kush. Every
-           physical frame in that range can be handed out by pmm_alloc()
-           to ANY kernel subsystem for ANY purpose, and the codebase-wide
-           convention of treating pmm_alloc()'s return value as a directly
-           dereferenceable identity-mapped pointer depends on that mapping
-           NEVER going away - unlike a forked child's own cloned PDE1
-           (a private copy of fresh pmm_alloc'd frames, see
-           paging_clone_dir()), so it can never be safely unmapped or
-           reset the way sc_execve() resets a child's own copy. Tried
-           exactly that as this bug's fix and it crashed the instant
-           elf_load_mem() next pmm_alloc'd one of the "reclaimed" frames
-           for something else and zeroed it via its own identity address -
-           confirmed live with a hardware breakpoint (kmemset() writing to
-           the exact address just unmapped). Record kush's real load
-           extent instead so paging_clone_dir() can bound its clone to
-           just that, without ever touching a single mapping here. */
-        paging_set_pde1_clone_bound(boot_r.load_base, boot_r.load_end);
-
-        /* Used to sched_waitpid() here and only call gui_run() once kush
-           exited - a separate pre-GUI screen, then a completely different
-           (much smaller) command set once the GUI took over. Spawning it
-           and going straight to gui_run() instead means kush keeps
-           running, for real, concurrently as its own scheduled task - the
-           GUI's own event loop is task 0, kush is whatever elf_spawn()
-           returns here - and gui.c hosts its actual console live inside
-           the desktop's own terminal window (gui_set_boot_terminal_pid())
-           instead of relaunching a lookalike. */
-        int boot_pid = elf_spawn("kush", &boot_r);
-        gui_set_boot_terminal_pid(boot_pid);
-    } else {
-        gui_set_boot_terminal_pid(-1);
-    }
-    gui_run();
 
     char line[CMD_LEN];
     while (1) {

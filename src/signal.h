@@ -2,6 +2,7 @@
 #define SIGNAL_H
 
 #include <stdint.h>
+#include "sched.h"
 
 #define SIGHUP   1
 #define SIGINT   2
@@ -37,5 +38,7 @@ int  signal_send(int pid, int sig);
 int  signal_set_handler(int sig, sighandler_t handler);
 void signal_check(void);
 int  signal_pending(void);
+void signal_fork(task_t *parent, task_t *child);
+
 
 #endif

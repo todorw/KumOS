@@ -63,13 +63,11 @@ void    *vmalloc(uint32_t size);
 void     vmfree(void *ptr);
 int      vmalloc_copy_on_write(uint32_t virt);
 
+uint32_t paging_new_dir(void);
 uint32_t paging_clone_dir(void);
-void     paging_set_pde1_clone_bound(uint32_t start, uint32_t end);
 void     paging_switch(uint32_t page_dir_phys);
 void     paging_free_user(uint32_t page_dir_phys);
 uint32_t paging_current_dir(void);
 uint32_t paging_root_dir(void);
-void     paging_copy_user_range(uint32_t src_dir, uint32_t dst_dir,
-                                uint32_t start, uint32_t end);
 
 #endif
