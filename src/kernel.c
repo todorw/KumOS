@@ -35,6 +35,7 @@
 #include "pkg.h"
 #include "pkgnet.h"
 #include "version.h"
+#include "power.h"
 
 #define MULTIBOOT_MAGIC  0x2BADB002
 #define MULTIBOOT_FLAG_MEM (1<<0)

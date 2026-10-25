@@ -21,6 +21,7 @@
 #include "net.h"
 #include "speaker.h"
 #include "browser.h"
+#include "power.h"
 #include <stdint.h>
 
 static inline void outb(uint16_t p, uint8_t v) { __asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p)); }
@@ -168,7 +169,7 @@ static int gui_theme = 0;
    pending-action slot is enough (nothing else takes input while it's up:
    gui_run()'s click dispatch checks this before anything else, same as
    it already does for ctxmenu_open/launcher_open). */
-typedef enum { CONFIRM_NONE = 0, CONFIRM_DELETE_FILE, CONFIRM_KILL_TASK } confirm_kind_t;
+typedef enum { CONFIRM_NONE = 0, CONFIRM_DELETE_FILE, CONFIRM_KILL_TASK, CONFIRM_REBOOT, CONFIRM_POWEROFF } confirm_kind_t;
 static confirm_kind_t confirm_pending = CONFIRM_NONE;
 static char           confirm_target_name[64];
 static int            confirm_target_pid;
@@ -2493,11 +2494,11 @@ static int launcher_hit(int mx, int my, int n) {
 
 #define CTXMENU_ROW_H 16
 #define CTXMENU_W     160
-#define CTXMENU_ITEMS 4
+#define CTXMENU_ITEMS 6
 
 static int ctxmenu_open = 0;
 static int ctxmenu_x = 0, ctxmenu_y = 0;
-static const char *ctxmenu_labels[CTXMENU_ITEMS] = {"New Terminal","Cascade Windows","Tile Windows","Close All Windows"};
+static const char *ctxmenu_labels[CTXMENU_ITEMS] = {"New Terminal","Cascade Windows","Tile Windows","Close All Windows","Restart","Shut Down"};
 
 static void ctxmenu_rect(int *x, int *y, int *h) {
     *h = CTXMENU_ITEMS*CTXMENU_ROW_H + 6;
@@ -2536,8 +2537,12 @@ static void draw_confirm(void) {
     char msg[64];
     if (confirm_pending == CONFIRM_DELETE_FILE) {
         kstrcpy(msg, "Delete "); kstrcat(msg, confirm_target_name); kstrcat(msg, "?");
-    } else {
+    } else if (confirm_pending == CONFIRM_KILL_TASK) {
         kstrcpy(msg, "Kill this task?");
+    } else if (confirm_pending == CONFIRM_REBOOT) {
+        kstrcpy(msg, "Restart KumOS?");
+    } else {
+        kstrcpy(msg, "Shut down KumOS?");
     }
     gui_puts(x+10, y+9, msg, C_WHITE, C_WIN_BG);
 
@@ -2558,6 +2563,11 @@ static int confirm_handle_click(int mx, int my) {
             files_refresh();
         } else if (confirm_pending == CONFIRM_KILL_TASK) {
             signal_send(confirm_target_pid, SIGTERM);
+        } else if (confirm_pending == CONFIRM_REBOOT) {
+            machine_reboot();
+        } else if (confirm_pending == CONFIRM_POWEROFF) {
+            for (int i = 0; i < VGA_TTYS; i++) term_close_session(i);
+            machine_poweroff();
         }
         confirm_pending = CONFIRM_NONE;
     } else if (point_in(mx, my, x+CONFIRM_W-78, by, 60, 14)) {
@@ -2765,6 +2775,8 @@ void gui_run(void) {
             else if (row == 1) wm_cascade();
             else if (row == 2) wm_tile();
             else if (row == 3) wm_close_all();
+            else if (row == 4) confirm_pending = CONFIRM_REBOOT;
+            else if (row == 5) confirm_pending = CONFIRM_POWEROFF;
         } else if (left_now && !prev_left && launcher_open) {
             launch_item_t items[LAUNCH_MAX];
             int n = launcher_build(items, LAUNCH_MAX);
