@@ -2380,6 +2380,7 @@ void gui_run(void) {
         draw_confirm();
 
         mouse_state_t *m = mouse_get();
+        uint8_t latched = mouse_take_pressed();
         int mx = m->x, my = m->y;
         if (mx < 0) mx = 0; if (mx >= GUI_WIDTH)  mx = GUI_WIDTH-1;
         if (my < 0) my = 0; if (my >= GUI_HEIGHT) my = GUI_HEIGHT-1;
@@ -2484,7 +2485,7 @@ void gui_run(void) {
             }
         }
 
-        int right_now = m->right;
+        int right_now = m->right || (latched & 2);
         if (right_now && !prev_right && !ctxmenu_open && !launcher_open &&
             confirm_pending == CONFIRM_NONE && my >= 10) {
             int hitw = -1;
@@ -2497,7 +2498,7 @@ void gui_run(void) {
         }
         prev_right = right_now;
 
-        int left_now = m->left;
+        int left_now = m->left || (latched & 1);
         if (left_now && !prev_left && confirm_pending != CONFIRM_NONE) {
             confirm_handle_click(mx, my);
         } else if (left_now && !prev_left && ctxmenu_open) {

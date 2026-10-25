@@ -76,6 +76,7 @@ static void mouse_irq(registers_t *r) {
     if (state.x > max_x)  state.x = max_x;
     if (state.y > max_y)  state.y = max_y;
 
+    state.pressed |= (uint8_t)((flags & 0x07) & ~state.buttons);
     state.buttons = flags & 0x07;
     state.left    = (flags & 0x01) ? 1 : 0;
     state.right   = (flags & 0x02) ? 1 : 0;
@@ -140,3 +141,12 @@ void mouse_init(void) {
 
 mouse_state_t *mouse_get(void)   { return &state;    }
 int            mouse_ready(void) { return detected;  }
+
+uint8_t mouse_take_pressed(void) {
+    uint32_t f;
+    __asm__ volatile ("pushfl; pop %0; cli" : "=r"(f) :: "memory");
+    uint8_t p = state.pressed;
+    state.pressed = 0;
+    __asm__ volatile ("push %0; popfl" :: "r"(f) : "memory");
+    return p;
+}
