@@ -17,8 +17,6 @@
 #define PAGE_COW         (1 << 9)
 
 #define KERN_BASE        0x00100000
-#define HEAP_VIRT_BASE   0x00700000
-#define HEAP_VIRT_MAX    0x01000000
 #define VMALLOC_BASE     0x01000000
 #define VMALLOC_END      0x02000000
 #define USER_BASE        0x40000000
@@ -57,13 +55,6 @@ void     paging_dump_range(uint32_t start, uint32_t end);
 void     demand_paging_init(void);
 uint32_t demand_fault_count(void);
 uint32_t demand_cow_count(void);
-
-void     heap_init(void);
-void    *heap_alloc(uint32_t size);
-void     heap_free(void *ptr);
-uint32_t heap_brk(void);
-uint32_t heap_used(void);
-uint32_t heap_capacity(void);
 
 void    *vmalloc(uint32_t size);
 void     vmfree(void *ptr);

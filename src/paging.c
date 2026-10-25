@@ -315,86 +315,6 @@ void paging_init(uint32_t mem_kb) {
     enable_paging();
 }
 
-#define HEAP_MAX_BLOCKS  512
-
-typedef struct {
-    uint32_t addr;
-    uint32_t size;
-    int      used;
-} hblock_t;
-
-static hblock_t  hblocks[HEAP_MAX_BLOCKS];
-static int       hnum_blocks = 0;
-static uint32_t  heap_brk_ptr = HEAP_VIRT_BASE;
-static uint32_t  heap_bytes_used = 0;
-
-void heap_init(void) {
-    kmemset(hblocks, 0, sizeof(hblocks));
-    hnum_blocks    = 0;
-    heap_brk_ptr   = HEAP_VIRT_BASE;
-    heap_bytes_used = 0;
-
-}
-
-static int heap_grow(uint32_t size) {
-    uint32_t new_brk = PAGE_ALIGN(heap_brk_ptr + size);
-    if (new_brk >= HEAP_VIRT_MAX) return 0;
-
-    uint32_t addr = PAGE_ALIGN(heap_brk_ptr);
-    while (addr < new_brk) {
-        if (!paging_is_mapped(addr)) {
-            uint32_t phys = pmm_alloc();
-            if (!phys) return 0;
-            paging_map(addr, phys, PAGE_WRITE);
-            kmemset((void *)addr, 0, PAGE_SIZE);
-        }
-        addr += PAGE_SIZE;
-    }
-    heap_brk_ptr = new_brk;
-    return 1;
-}
-
-void *heap_alloc(uint32_t size) {
-    if (!size) return 0;
-    size = (size + 7) & ~7;
-
-    for (int i = 0; i < hnum_blocks; i++) {
-        if (!hblocks[i].used && hblocks[i].size >= size) {
-            hblocks[i].used = 1;
-            heap_bytes_used += hblocks[i].size;
-            return (void *)hblocks[i].addr;
-        }
-    }
-
-    if (hnum_blocks >= HEAP_MAX_BLOCKS) return 0;
-
-    uint32_t addr = heap_brk_ptr;
-    if (!heap_grow(size)) return 0;
-
-    hblocks[hnum_blocks].addr = addr;
-    hblocks[hnum_blocks].size = size;
-    hblocks[hnum_blocks].used = 1;
-    hnum_blocks++;
-    heap_bytes_used += size;
-    return (void *)addr;
-}
-
-void heap_free(void *ptr) {
-    uint32_t addr = (uint32_t)ptr;
-    for (int i = 0; i < hnum_blocks; i++) {
-        if (hblocks[i].addr == addr && hblocks[i].used) {
-            hblocks[i].used = 0;
-            if (heap_bytes_used >= hblocks[i].size)
-                heap_bytes_used -= hblocks[i].size;
-            return;
-        }
-    }
-}
-
-uint32_t heap_brk(void)      { return heap_brk_ptr;    }
-uint32_t heap_used(void)     { return heap_bytes_used;  }
-uint32_t heap_capacity(void) { return heap_brk_ptr - HEAP_VIRT_BASE; }
-
 #define VMALLOC_MAX_REGIONS  64
 
 typedef struct {
@@ -469,18 +389,6 @@ static void page_fault_handler(registers_t *r) {
     serial_printf("[fault] page fault: pid=%u cr2=%x err=%x eip=%x esp=%x\r\n",
                   sched_current()->pid, fault_addr, r->err_code, r->eip, r->esp);
 
-    if (!present && fault_addr >= HEAP_VIRT_BASE && fault_addr < HEAP_VIRT_MAX) {
-        uint32_t page = fault_addr & ~0xFFF;
-        uint32_t phys = pmm_alloc();
-        if (phys) {
-            paging_map(page, phys, PAGE_WRITE);
-            kmemset((void *)page, 0, PAGE_SIZE);
-            fault_count++;
-            return;
-        }
-
-    }
-
     if (present && write) {
         uint32_t page = fault_addr & ~0xFFF;
         uint32_t *pte = pte_ptr(page, 0);
@@ -532,7 +440,6 @@ static void page_fault_handler(registers_t *r) {
 }
 
 void demand_paging_init(void) {
-    heap_init();
     exc_register(14, page_fault_handler);
 }
 

@@ -209,11 +209,8 @@ static void cmd_meminfo(void) {
     kprintf("  Demand faults:   %u handled  %u COW copies\n",
             demand_fault_count(), demand_cow_count());
     vga_puts("\n");
-    kprintf("  Static heap:     %u used / %u free  (base=0x%x, 512KB)\n",
+    kprintf("  Kernel heap:     %u used / %u free  (base=0x%x)\n",
             kmalloc_used(), kmalloc_free(), kmalloc_base());
-    kprintf("  Dynamic heap:    %u used  brk=0x%x  cap=%u KB\n",
-            heap_used(), heap_brk(), heap_capacity()/1024);
-    vga_puts("  vmalloc region:  0x01000000 - 0x02000000  (16 MB)\n");
     vga_puts("  Paging:          ENABLED  (CR0.PG=1)\n\n");
 }
 
@@ -225,11 +222,10 @@ static void cmd_vmem(void) {
     vga_puts("  ------              -----        ---          ----\n");
     vga_puts("  BIOS/IVT            0x00000000   0x000FFFFF   identity\n");
     vga_puts("  VGA framebuf        0x000B8000   0x000BFFFF   identity\n");
-    kprintf("  Kernel              0x00100000   0x%x   identity R/W\n", (uint32_t)kmalloc_base());
-    kprintf("  Static heap         0x%x   +512KB       identity R/W\n", (uint32_t)kmalloc_base());
-    vga_puts("  Dynamic heap        0x00700000   0x00FFFFFF   demand-paged\n");
-    vga_puts("  vmalloc             0x01000000   0x02000000   on-demand\n");
-    vga_puts("  [future user]       0x40000000   0xFFFFFFFF   unmapped\n\n");
+    vga_puts("  Kernel image        0x00100000   0x003FFFFF   identity R/W\n");
+    vga_puts("  User programs       0x00400000   0x007FFFFF   per process\n");
+    kprintf("  Kernel heap         0x%x                identity R/W\n", (uint32_t)kmalloc_base());
+    vga_puts("  User stack          0x3FFFC000   0x3FFFFFFF   per process\n\n");
 
     vga_set_color(VGA_CYAN,VGA_BLACK);
     vga_puts("  Live mapped ranges (first 16MB):\n");
@@ -242,8 +238,6 @@ static void cmd_vmem(void) {
     kprintf("    Page faults handled: %u\n", demand_fault_count());
     kprintf("    COW copies made:     %u\n", demand_cow_count());
     kprintf("    PMM frames used:     %u / %u\n", pmm_used(), pmm_total());
-    kprintf("    Heap brk:            0x%x  (%u KB used)\n",
-            heap_brk(), heap_capacity()/1024);
     vga_putchar('\n');
 }
 
@@ -666,7 +660,7 @@ static void cmd_cal(void) {
 static void cmd_free(void) {
     uint32_t phys_used_kb = pmm_used() * (PAGE_SIZE/1024);
     uint32_t phys_free_kb = (pmm_total()-pmm_used()) * (PAGE_SIZE/1024);
-    uint32_t heap_used_kb = (kmalloc_used()+heap_used()) / 1024;
+    uint32_t heap_used_kb = kmalloc_used() / 1024;
 
     vga_set_color(VGA_YELLOW,VGA_BLACK);
     vga_puts("\n  === Memory ===\n\n");
@@ -675,9 +669,9 @@ static void cmd_free(void) {
     vga_puts("  Mem:      "); put_dec_pad(total_mem_kb,8); vga_puts("K  ");
                               put_dec_pad(phys_used_kb,8); vga_puts("K  ");
                               put_dec_pad(phys_free_kb,8); vga_puts("K\n");
-    vga_puts("  Heap:     "); put_dec_pad((kmalloc_used()+kmalloc_free()+heap_used()+heap_capacity())/1024,8); vga_puts("K  ");
+    vga_puts("  Heap:     "); put_dec_pad((kmalloc_used()+kmalloc_free())/1024,8); vga_puts("K  ");
                               put_dec_pad(heap_used_kb,8); vga_puts("K  ");
-                              put_dec_pad((kmalloc_free()+heap_capacity()-heap_used())/1024,8); vga_puts("K\n");
+                              put_dec_pad(kmalloc_free()/1024,8); vga_puts("K\n");
     vga_putchar('\n');
 }
 

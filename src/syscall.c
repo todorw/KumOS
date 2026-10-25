@@ -92,11 +92,8 @@ static uint32_t sc_yield(uint32_t a, uint32_t b, uint32_t c) {
 }
 
 static uint32_t sc_sbrk(uint32_t inc, uint32_t b, uint32_t c) {
-    (void)b; (void)c;
-
-    if (inc == 0) return heap_brk();
-    void *p = vmalloc(inc);
-    return p ? (uint32_t)p : (uint32_t)-1;
+    (void)inc; (void)b; (void)c;
+    return (uint32_t)-1;
 }
 
 static uint32_t sc_uptime(uint32_t a, uint32_t b, uint32_t c) {
