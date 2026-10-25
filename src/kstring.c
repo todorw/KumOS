@@ -83,5 +83,6 @@ char *kstrrchr(const char *s, int c) {
     return (char*)last;
 }
 int kstrncpy_safe(char *dst, const char *src, size_t n) {
+    if (!n) return 0;
     size_t i=0; while(i<n-1&&src[i]){dst[i]=src[i];i++;} dst[i]=0; return (int)i;
 }
