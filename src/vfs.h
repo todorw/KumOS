@@ -84,7 +84,4 @@ int  vfs_isatty(int fd);
 
 vfs_fd_t *vfs_get_fd(int fd);
 
-typedef void (*vfs_stdout_sink_t)(char c);
-void vfs_set_stdout_sink(vfs_stdout_sink_t sink);
-
 #endif

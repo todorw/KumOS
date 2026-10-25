@@ -262,15 +262,10 @@ static int dev_vfs_read(int d, void *buf, uint32_t len) {
     if (d == 3) return 0;
     return -1;
 }
-static vfs_stdout_sink_t stdout_sink = 0;
-
-void vfs_set_stdout_sink(vfs_stdout_sink_t sink) { stdout_sink = sink; }
-
 static int dev_vfs_write(int d, const void *buf, uint32_t len) {
     if (d == 1 || d == 2) {
         const char *s = (const char *)buf;
-        if (stdout_sink) { for (uint32_t i = 0; i < len; i++) stdout_sink(s[i]); }
-        else              { for (uint32_t i = 0; i < len; i++) vga_putchar(s[i]); }
+        for (uint32_t i = 0; i < len; i++) vga_putchar(s[i]);
         return (int)len;
     }
     if (d == 3) return (int)len;
