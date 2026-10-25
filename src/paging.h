@@ -32,7 +32,9 @@
    no matter who asks, and it's the safe lower bound for any code that
    wants to reclaim/reset a range of PDE1 (see paging_clone_dir()'s comment
    in paging.c for why that matters). */
-#define KERNEL_RESERVED_END  0x00500000
+#define KHEAP_BASE           0x00800000
+#define KHEAP_SIZE           0x00200000
+#define KERNEL_RESERVED_END  (KHEAP_BASE + KHEAP_SIZE)
 
 void     pmm_init(uint32_t mem_kb);
 uint32_t pmm_alloc(void);

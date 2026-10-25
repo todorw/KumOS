@@ -1490,10 +1490,8 @@ void kernel_main(uint32_t magic, multiboot_info_t *mbi) {
         total_mem_kb = 32768;
     serial_printf("[boot] RAM: %u KB (%u MB)\r\n", total_mem_kb, total_mem_kb/1024);
 
-    extern uint8_t _kernel_end[];
-    uint32_t heap_base = ((uint32_t)_kernel_end + 0x10000 + 0xFFF) & ~0xFFFu;
-    kmalloc_init(heap_base, 512*1024);
-    serial_printf("[boot] Heap @ %x, 512KB\r\n", heap_base);
+    kmalloc_init(KHEAP_BASE, KHEAP_SIZE);
+    serial_printf("[boot] Heap @ %x, %u KB\r\n", KHEAP_BASE, KHEAP_SIZE / 1024);
 
     gdt_init();
     serial_printf("[boot] GDT loaded (6 descriptors)\r\n");

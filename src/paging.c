@@ -33,7 +33,7 @@ void pmm_init(uint32_t mem_kb) {
     for (uint32_t i = 0; i < pmm_total_frames; i++)
         pmm_refs[pmm_base_frame + i] = 0;
 
-    uint32_t kern_end = frame_idx(0x00500000);
+    uint32_t kern_end = frame_idx(KERNEL_RESERVED_END);
     for (uint32_t f = pmm_base_frame; f < kern_end && f < PMM_MAX_FRAMES; f++) {
         pmm_refs[f] = 1;
         pmm_used_frames++;
