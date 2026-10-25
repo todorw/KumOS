@@ -250,27 +250,52 @@ static int printf(const char *fmt, ...) {
     return pos;
 }
 
-static uint32_t _heap_ptr = 0;
+#define _HEAP_SIZE (64 * 1024)
+typedef struct _mblk { uint32_t size; uint32_t used; } _mblk_t;
+static uint32_t _heap_arena[_HEAP_SIZE / 4];
+static uint32_t _heap_top = 0;
 
 static inline void *malloc(size_t size) {
     if (!size) return 0;
-    size = (size + 7) & ~7;
-    if (!_heap_ptr) {
-
-        _heap_ptr = (uint32_t)_syscall(SYS_SBRK, 0, 0, 0);
-        if (!_heap_ptr || _heap_ptr == (uint32_t)-1) return 0;
+    size = (size + 7) & ~7u;
+    uint8_t *base = (uint8_t *)_heap_arena;
+    for (uint32_t off = 0; off < _heap_top; ) {
+        _mblk_t *m = (_mblk_t *)(base + off);
+        if (!m->used && m->size >= size) {
+            if (m->size >= size + sizeof(_mblk_t) + 16) {
+                _mblk_t *rest = (_mblk_t *)(base + off + sizeof(_mblk_t) + size);
+                rest->size = m->size - size - sizeof(_mblk_t);
+                rest->used = 0;
+                m->size = size;
+            }
+            m->used = 1;
+            return m + 1;
+        }
+        off += sizeof(_mblk_t) + m->size;
     }
-    void *ptr = (void *)_heap_ptr;
-    uint32_t new_ptr = _heap_ptr + (uint32_t)size;
-
-    int r = _syscall(SYS_SBRK, (int)size, 0, 0);
-    if (r == -1) return 0;
-    _heap_ptr = new_ptr;
-    return ptr;
+    if (_heap_top + sizeof(_mblk_t) + size > _HEAP_SIZE) return 0;
+    _mblk_t *m = (_mblk_t *)(base + _heap_top);
+    m->size = size; m->used = 1;
+    _heap_top += sizeof(_mblk_t) + size;
+    return m + 1;
 }
 
 static inline void free(void *ptr) {
-    (void)ptr;
+    if (!ptr) return;
+    ((_mblk_t *)ptr - 1)->used = 0;
+    uint8_t *base = (uint8_t *)_heap_arena;
+    for (uint32_t off = 0; off < _heap_top; ) {
+        _mblk_t *m = (_mblk_t *)(base + off);
+        uint32_t next = off + sizeof(_mblk_t) + m->size;
+        if (!m->used) {
+            while (next < _heap_top && !((_mblk_t *)(base + next))->used) {
+                m->size += sizeof(_mblk_t) + ((_mblk_t *)(base + next))->size;
+                next = off + sizeof(_mblk_t) + m->size;
+            }
+            if (next >= _heap_top) { _heap_top = off; break; }
+        }
+        off = next;
+    }
 }
 
 static inline void *calloc(size_t n, size_t sz) {
@@ -299,14 +324,6 @@ static inline void print_time(void) {
     }
 }
 
-extern int main(void);
-
-void _start(void) {
-    int code = main();
-    exit(code);
-}
-
-#endif
 static inline int sys_kill(int pid, int sig) {
     int r; __asm__ volatile("int $0x80":"=a"(r):"a"(30),"b"(pid),"c"(sig):"memory"); return r;
 }
@@ -539,3 +556,26 @@ static inline int select_fd(int nfds, uint32_t *rfds) {
 static inline int poll_fd(int *fds, int nfds) {
     int r; __asm__ volatile("int $0x80":"=a"(r):"a"(46),"b"(fds),"c"(nfds):"memory"); return r;
 }
+
+static int    __argc;
+static char **__argv;
+
+static inline int args_line(char *buf, int max) {
+    int n = 0;
+    for (int i = 1; i < __argc && n < max - 1; i++) {
+        if (i > 1) buf[n++] = ' ';
+        for (const char *p = __argv[i]; *p && n < max - 1; p++) buf[n++] = *p;
+    }
+    buf[n] = 0;
+    return n;
+}
+
+int main();
+
+void _start(int argc, char **argv) {
+    __argc = argc;
+    __argv = argv;
+    exit(main(argc, argv));
+}
+
+#endif
