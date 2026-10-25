@@ -338,11 +338,18 @@ int browser_navigate(const char *url) {
             if (loc && hop == 0) {
                 const char *le = loc;
                 while (le < hend && *le != '\r' && *le != '\n') le++;
-                int n = (int)(le - loc); if (n >= (int)sizeof(browser_url_buf)) n = sizeof(browser_url_buf)-1;
-                kmemcpy(browser_url_buf, loc, (size_t)n);
-                browser_url_buf[n] = 0;
+                char next[160];
+                int o = 0;
+                if (*loc == '/') {
+                    const char *scheme = use_tls ? "https://" : "http://";
+                    for (const char *p = scheme; *p; p++) next[o++] = *p;
+                    for (const char *p = host; *p && o < 120; p++) next[o++] = *p;
+                }
+                for (const char *p = loc; p < le && o < (int)sizeof(next) - 1; p++) next[o++] = *p;
+                next[o] = 0;
+                kstrcpy(browser_url_buf, next);
                 kfree(buf);
-                continue;   /* one more hop */
+                continue;
             }
         }
 
