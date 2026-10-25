@@ -832,6 +832,8 @@ static int do_exec(char *argv[], int argc) {
     int pid = sys_fork();
     if (pid < 0) { printf("kush: fork failed\n"); return 1; }
     if (pid == 0) {
+        sys_signal(2, 0);
+        sys_signal(20, 0);
         char *nargv[16]; int n = 0;
         nargv[n++] = upper;
         for (int j = 1; j < argc && n < 15; j++) nargv[n++] = argv[j];
@@ -1499,6 +1501,8 @@ static int run_script(const char *filename) {
 }
 
 int main(void) {
+    sys_signal(2, (void (*)(int))1);
+    sys_signal(20, (void (*)(int))1);
     sys_getcwd(cwd_buf, sizeof(cwd_buf));
     if (!cwd_buf[0]) strcpy(cwd_buf, "/disk");
 
