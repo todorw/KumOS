@@ -3,7 +3,12 @@
 #include "kstring.h"
 #include "vfs.h"
 #include "vga.h"
+#include "kmalloc.h"
+#include "irq.h"
 #include <stdint.h>
+
+#define EXT2_BITMAP_BITS 8192
+#define EXT2_WBUF_MAX    (64u * 1024u)
 
 #define EXT2_FMT_BLOCKS  8192
 #define EXT2_FMT_INODES  1024
@@ -70,6 +75,7 @@ static uint32_t block_bit_alloc(void) {
     uint8_t bmp[1024];
     read_block(bgd.bg_block_bitmap, bmp);
     uint32_t usable = sb.s_blocks_count - sb.s_first_data_block;
+    if (usable > EXT2_BITMAP_BITS) usable = EXT2_BITMAP_BITS;
     for (uint32_t i = 0; i < usable; i++) {
         uint32_t byte = i/8, bit = i%8;
         if (!(bmp[byte] & (1u<<bit))) {
@@ -88,6 +94,7 @@ static void block_bit_free(uint32_t blk) {
     uint8_t bmp[1024];
     read_block(bgd.bg_block_bitmap, bmp);
     uint32_t i = blk - sb.s_first_data_block;
+    if (blk < sb.s_first_data_block || i >= EXT2_BITMAP_BITS) return;
     uint32_t byte = i/8, bit = i%8;
     if (bmp[byte] & (1u<<bit)) {
         bmp[byte] &= (uint8_t)~(1u<<bit);
@@ -100,7 +107,8 @@ static void block_bit_free(uint32_t blk) {
 static uint32_t inode_bit_alloc(void) {
     uint8_t bmp[1024];
     read_block(bgd.bg_inode_bitmap, bmp);
-    for (uint32_t i = 0; i < sb.s_inodes_count; i++) {
+    uint32_t limit = sb.s_inodes_count < EXT2_BITMAP_BITS ? sb.s_inodes_count : EXT2_BITMAP_BITS;
+    for (uint32_t i = 0; i < limit; i++) {
         uint32_t byte = i/8, bit = i%8;
         if (!(bmp[byte] & (1u<<bit))) {
             bmp[byte] |= (uint8_t)(1u<<bit);
@@ -118,6 +126,7 @@ static void inode_bit_free(uint32_t ino) {
     uint8_t bmp[1024];
     read_block(bgd.bg_inode_bitmap, bmp);
     uint32_t i = ino - 1;
+    if (i >= EXT2_BITMAP_BITS) return;
     uint32_t byte = i/8, bit = i%8;
     if (bmp[byte] & (1u<<bit)) {
         bmp[byte] &= (uint8_t)~(1u<<bit);
@@ -206,6 +215,7 @@ static uint32_t path_to_ino(const char *path) {
         const char *slash = p;
         while (*slash && *slash!='/') slash++;
         uint32_t len = (uint32_t)(slash - p);
+        if (len > 255) return 0;
         kmemcpy(part, p, len); part[len]=0;
         ino = lookup_dir(ino, part);
         if (!ino) return 0;
@@ -326,8 +336,12 @@ int ext2_init(int drive, uint32_t lba_start) {
     ata_read(g_drive, lba_start+2, 1, tmp);
     ata_read(g_drive, lba_start+3, 1, tmp+512);
     kmemcpy(&sb, tmp, sizeof(ext2_super_t));
-    if (sb.s_magic != EXT2_MAGIC) { mounted = 0; return -1; }
-    block_size = 1024u << sb.s_log_block_size;
+    mounted = 0;
+    if (sb.s_magic != EXT2_MAGIC || sb.s_log_block_size != 0) return -1;
+    if (sb.s_inodes_per_group == 0 || sb.s_blocks_count > sb.s_blocks_per_group) return -1;
+    if (sb.s_rev_level == 0) sb.s_inode_size = 128;
+    if (sb.s_inode_size < 128 || sb.s_inode_size > 1024 || (1024 % sb.s_inode_size)) return -1;
+    block_size = 1024;
     uint8_t bgd_buf[512];
     uint32_t bgd_lba = lba_start + (block_size==1024?4:block_size/512);
     ata_read(g_drive, bgd_lba, 1, bgd_buf);
@@ -539,13 +553,32 @@ int ext2_list_dir(const char *path, char *buf, uint32_t sz) {
     return (int)pos;
 }
 
-int ext2_stat(const char *path, uint32_t *size_out) {
+int ext2_stat(const char *path, uint32_t *size_out, int *is_dir) {
     if (!mounted) return -1;
     uint32_t ino = path_to_ino(path);
     if (!ino) return -1;
     ext2_inode_t inode; read_inode(ino, &inode);
     if (size_out) *size_out = inode.i_size;
+    if (is_dir) *is_dir = (inode.i_mode & 0xF000) == 0x4000;
     return 0;
+}
+
+static int ext2_read_at(uint32_t ino, uint32_t off, void *buf, uint32_t len) {
+    ext2_inode_t inode; read_inode(ino, &inode);
+    if (off >= inode.i_size) return 0;
+    if (len > inode.i_size - off) len = inode.i_size - off;
+    uint8_t blk[1024]; uint32_t done = 0;
+    while (done < len) {
+        uint32_t pos = off + done;
+        uint32_t bno = get_block(&inode, pos / 1024);
+        uint32_t boff = pos % 1024;
+        uint32_t chunk = 1024 - boff;
+        if (chunk > len - done) chunk = len - done;
+        if (bno) { read_block(bno, blk); kmemcpy((uint8_t *)buf + done, blk + boff, chunk); }
+        else kmemset((uint8_t *)buf + done, 0, chunk);
+        done += chunk;
+    }
+    return (int)done;
 }
 
 int ext2_space(uint32_t *total_kb, uint32_t *free_kb) {
@@ -569,41 +602,112 @@ void ext2_info(void) {
     vga_puts(" KB\n\n");
 }
 
+#define E2_MAX_OPEN 8
+static struct {
+    int      used;
+    uint32_t ino;
+    uint32_t pos;
+    int      writable;
+    char     name[64];
+    uint8_t *wbuf;
+    uint32_t wsize;
+} e2_open_tab[E2_MAX_OPEN];
+
 static int e2_open(const char *path, int flags) {
-    (void)flags;
+    if (!mounted) return -1;
+    int slot = -1;
+    for (int i = 0; i < E2_MAX_OPEN; i++) if (!e2_open_tab[i].used) { slot = i; break; }
+    if (slot < 0) return -1;
     uint32_t ino = path_to_ino(path);
-    return ino ? (int)ino : -1;
-}
-static int e2_close(int d)  { (void)d; return 0; }
-static int e2_read(int d, void *buf, uint32_t len) {
-    ext2_inode_t inode; read_inode((uint32_t)d, &inode);
-    uint32_t total=inode.i_size<len?inode.i_size:len;
-    uint8_t blk[1024]; uint32_t done=0;
-    for(uint32_t b=0;done<total;b++){
-        uint32_t bno=get_block(&inode,b); if(!bno)break;
-        read_block(bno,blk);
-        uint32_t chunk=total-done>block_size?block_size:total-done;
-        kmemcpy((uint8_t*)buf+done,blk,chunk); done+=chunk;
+    int writable = (flags & (O_WRONLY | O_RDWR | O_CREAT)) != 0;
+    if (!ino && !(flags & O_CREAT)) return -1;
+
+    e2_open_tab[slot].ino = ino;
+    e2_open_tab[slot].pos = 0;
+    e2_open_tab[slot].writable = writable;
+    e2_open_tab[slot].wbuf = 0;
+    e2_open_tab[slot].wsize = 0;
+    kstrncpy_safe(e2_open_tab[slot].name, path, sizeof(e2_open_tab[slot].name));
+
+    if (writable) {
+        uint8_t *b = (uint8_t *)kmalloc(EXT2_WBUF_MAX);
+        if (!b) return -1;
+        uint32_t n = 0;
+        if (ino && !(flags & O_TRUNC)) {
+            int r = ext2_read_at(ino, 0, b, EXT2_WBUF_MAX);
+            n = r > 0 ? (uint32_t)r : 0;
+        }
+        e2_open_tab[slot].wbuf = b;
+        e2_open_tab[slot].wsize = n;
+        e2_open_tab[slot].pos = (flags & O_APPEND) ? n : 0;
     }
-    return (int)done;
+    e2_open_tab[slot].used = 1;
+    return slot;
 }
+
+static int e2_close(int d) {
+    if (d < 0 || d >= E2_MAX_OPEN || !e2_open_tab[d].used) return -1;
+    int r = 0;
+    if (e2_open_tab[d].wbuf) {
+        if (ext2_write_file(e2_open_tab[d].name, e2_open_tab[d].wbuf, e2_open_tab[d].wsize) < 0) r = -1;
+        kfree(e2_open_tab[d].wbuf);
+    }
+    e2_open_tab[d].used = 0;
+    return r;
+}
+
+static int e2_read(int d, void *buf, uint32_t len) {
+    if (d < 0 || d >= E2_MAX_OPEN || !e2_open_tab[d].used) return -1;
+    int n;
+    if (e2_open_tab[d].wbuf) {
+        uint32_t avail = e2_open_tab[d].wsize > e2_open_tab[d].pos ? e2_open_tab[d].wsize - e2_open_tab[d].pos : 0;
+        if (len > avail) len = avail;
+        kmemcpy(buf, e2_open_tab[d].wbuf + e2_open_tab[d].pos, len);
+        n = (int)len;
+    } else {
+        n = ext2_read_at(e2_open_tab[d].ino, e2_open_tab[d].pos, buf, len);
+    }
+    if (n > 0) e2_open_tab[d].pos += (uint32_t)n;
+    return n;
+}
+
 static int e2_write(int d, const void *buf, uint32_t len) {
-    (void)d;(void)buf;(void)len; return -1;
+    if (d < 0 || d >= E2_MAX_OPEN || !e2_open_tab[d].used || !e2_open_tab[d].wbuf) return -1;
+    uint32_t pos = e2_open_tab[d].pos;
+    if (pos >= EXT2_WBUF_MAX) return 0;
+    if (len > EXT2_WBUF_MAX - pos) len = EXT2_WBUF_MAX - pos;
+    kmemcpy(e2_open_tab[d].wbuf + pos, buf, len);
+    e2_open_tab[d].pos = pos + len;
+    if (e2_open_tab[d].pos > e2_open_tab[d].wsize) e2_open_tab[d].wsize = e2_open_tab[d].pos;
+    return (int)len;
 }
+
 static int e2_stat(const char *path, vfs_stat_t *st) {
-    uint32_t size=0;
-    if(ext2_stat(path,&size)<0) return -1;
-    st->size=size; st->type=VFS_FILE;
-    kstrcpy(st->name,path);
+    uint32_t size = 0; int is_dir = 0;
+    if (ext2_stat(path, &size, &is_dir) < 0) return -1;
+    st->size = size;
+    st->type = is_dir ? VFS_DIR : VFS_FILE;
+    kstrncpy_safe(st->name, path, sizeof(st->name));
     return 0;
 }
+
 static int e2_readdir(const char *path, char *buf, uint32_t sz) {
-    return ext2_list_dir(path,buf,sz);
+    return ext2_list_dir(path, buf, sz);
 }
+
 static int e2_unlink(const char *path) {
     return ext2_delete_file(path);
 }
 
+#define E2_LOCKED(call) do { uint32_t f_ = irq_save(); int r_ = (call); irq_restore(f_); return r_; } while (0)
+static int e2_open_l(const char *p, int fl)               { E2_LOCKED(e2_open(p, fl)); }
+static int e2_close_l(int d)                              { E2_LOCKED(e2_close(d)); }
+static int e2_read_l(int d, void *b, uint32_t n)          { E2_LOCKED(e2_read(d, b, n)); }
+static int e2_write_l(int d, const void *b, uint32_t n)   { E2_LOCKED(e2_write(d, b, n)); }
+static int e2_stat_l(const char *p, vfs_stat_t *st)       { E2_LOCKED(e2_stat(p, st)); }
+static int e2_readdir_l(const char *p, char *b, uint32_t n) { E2_LOCKED(e2_readdir(p, b, n)); }
+static int e2_unlink_l(const char *p)                     { E2_LOCKED(e2_unlink(p)); }
+
 vfs_ops_t ext2_vfs_ops = {
-    e2_open, e2_close, e2_read, e2_write, e2_stat, e2_readdir, e2_unlink, 0
+    e2_open_l, e2_close_l, e2_read_l, e2_write_l, e2_stat_l, e2_readdir_l, e2_unlink_l, 0
 };

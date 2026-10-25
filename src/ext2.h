@@ -80,7 +80,7 @@ int  ext2_read_file(const char *path, void *buf, uint32_t sz);
 int  ext2_write_file(const char *path, const void *buf, uint32_t size);
 int  ext2_delete_file(const char *path);
 int  ext2_list_dir(const char *path, char *buf, uint32_t sz);
-int  ext2_stat(const char *path, uint32_t *size_out);
+int  ext2_stat(const char *path, uint32_t *size_out, int *is_dir);
 void ext2_info(void);
 int  ext2_space(uint32_t *total_kb, uint32_t *free_kb);
 
