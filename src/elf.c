@@ -8,6 +8,7 @@
 #include "kmalloc.h"
 #include "sched.h"
 #include "gdt.h"
+#include "pkg.h"
 #include <stdint.h>
 
 #define USER_CS  0x1B
@@ -40,88 +41,50 @@ elf_load_result_t elf_load_mem(const void *buf, uint32_t bufsz) {
         if (phoff + sizeof(elf32_phdr_t) > bufsz) continue;
 
         const elf32_phdr_t *ph = (const elf32_phdr_t *)(data + phoff);
-        if (ph->type != PT_LOAD) continue;
-        if (ph->memsz == 0)      continue;
+        if (ph->type != PT_LOAD || ph->memsz == 0) continue;
 
-        if (ph->vaddr < 0x100000) continue;
-        if (ph->vaddr >= 0xC0000000) continue;
-
-        extern uint8_t _kernel_end[];
-        if (ph->vaddr >= KERN_BASE && ph->vaddr < (uint32_t)_kernel_end) {
+        uint32_t seg_end = ph->vaddr + ph->memsz;
+        if (ph->vaddr < USER_CODE_BASE || seg_end > USER_CODE_END || seg_end < ph->vaddr ||
+            ph->filesz > ph->memsz || ph->offset > bufsz || ph->filesz > bufsz - ph->offset) {
             res.error = -2; return res;
         }
 
         uint32_t vstart = ph->vaddr & ~0xFFF;
-        uint32_t vend   = PAGE_ALIGN(ph->vaddr + ph->memsz);
-        uint32_t flags  = PAGE_USER | PAGE_WRITE;
-
+        uint32_t vend   = PAGE_ALIGN(seg_end);
         for (uint32_t va = vstart; va < vend; va += PAGE_SIZE) {
             if (!paging_is_mapped(va)) {
                 uint32_t phys = pmm_alloc();
                 if (!phys) { res.error = -3; return res; }
                 kmemset((void *)phys, 0, PAGE_SIZE);
-                paging_map(va, phys, flags);
+                paging_map(va, phys, PAGE_USER | PAGE_WRITE);
             } else {
-                /* Already mapped (e.g. inside the boot-time identity range) —
-                   the existing mapping is supervisor-only, so re-map the same
-                   physical frame with PAGE_USER for this ring-3 segment. */
-                uint32_t phys = paging_virt_to_phys(va) & ~0xFFF;
-                paging_map(va, phys, flags);
+                paging_map(va, paging_virt_to_phys(va) & ~0xFFF, PAGE_USER | PAGE_WRITE);
             }
         }
 
-        if (ph->filesz > 0) {
-            uint32_t src_off = ph->offset;
-            uint32_t copy    = ph->filesz;
-            if (src_off + copy > bufsz) copy = bufsz - src_off;
-            kmemcpy((void *)ph->vaddr, data + src_off, copy);
-        }
-
-        if (ph->memsz > ph->filesz) {
-            kmemset((void *)(ph->vaddr + ph->filesz), 0,
-                    ph->memsz - ph->filesz);
-        }
+        if (ph->filesz) kmemcpy((void *)ph->vaddr, data + ph->offset, ph->filesz);
+        if (ph->memsz > ph->filesz)
+            kmemset((void *)(ph->vaddr + ph->filesz), 0, ph->memsz - ph->filesz);
 
         if (ph->vaddr < res.load_base) res.load_base = ph->vaddr;
-        if (ph->vaddr + ph->memsz > res.load_end)
-            res.load_end = ph->vaddr + ph->memsz;
+        if (seg_end > res.load_end) res.load_end = seg_end;
     }
 
     if (res.load_base == 0xFFFFFFFF) { res.error = -2; return res; }
+    if (res.entry < res.load_base || res.entry >= res.load_end) { res.error = -2; return res; }
     return res;
 }
 
 #define ELF_MAX_SIZE (128 * 1024)
 static uint8_t elf_load_buf[ELF_MAX_SIZE];
 
-elf_load_result_t elf_load_disk(const char *filename) {
-    elf_load_result_t res = {0,0,0,-4};
-
-    if (!fat12_mounted()) return res;
-
-    int n = fat12_read(filename, elf_load_buf, ELF_MAX_SIZE);
-    if (n <= 0) {
-
-        fs_file_t *mf = fs_find(filename);
-        if (!mf) return res;
-        n = (int)mf->size;
-        if (n > ELF_MAX_SIZE) n = ELF_MAX_SIZE;
-        kmemcpy(elf_load_buf, mf->data, (uint32_t)n);
+static int elf_fetch(const char *filename, const uint8_t **out, uint32_t *len) {
+    const uint8_t *s, *e;
+    if (pkg_blob_by_fname(filename, &s, &e) == 0) {
+        *out = s; *len = (uint32_t)(e - s);
+        return 0;
     }
-
-    return elf_load_mem(elf_load_buf, (uint32_t)n);
-}
-
-/* Header-only check, no mapping/copy side effects - used by execve() to
-   fail fast on a missing/bad target before it tears down the caller's own
-   address space. elf_load_disk() itself always maps+copies into whatever
-   directory is currently active, which used to make execve()'s old
-   pre-flight call (checking the target exists before committing to the
-   clone+switch) overwrite the caller's own still-running code. */
-int elf_validate_disk(const char *filename) {
-    if (!fat12_mounted()) return -1;
-
-    int n = fat12_read(filename, elf_load_buf, ELF_MAX_SIZE);
+    int n = fat12_mounted() ? fat12_read(filename, elf_load_buf, ELF_MAX_SIZE) : -1;
     if (n <= 0) {
         fs_file_t *mf = fs_find(filename);
         if (!mf) return -1;
@@ -129,8 +92,22 @@ int elf_validate_disk(const char *filename) {
         if (n > ELF_MAX_SIZE) n = ELF_MAX_SIZE;
         kmemcpy(elf_load_buf, mf->data, (uint32_t)n);
     }
-    if ((uint32_t)n < sizeof(elf32_hdr_t)) return -1;
-    return elf_validate((const elf32_hdr_t *)elf_load_buf);
+    *out = elf_load_buf; *len = (uint32_t)n;
+    return 0;
+}
+
+elf_load_result_t elf_load_disk(const char *filename) {
+    elf_load_result_t res = {0,0,0,-4};
+    const uint8_t *img; uint32_t len;
+    if (elf_fetch(filename, &img, &len) != 0) return res;
+    return elf_load_mem(img, len);
+}
+
+int elf_validate_disk(const char *filename) {
+    const uint8_t *img; uint32_t len;
+    if (elf_fetch(filename, &img, &len) != 0) return -1;
+    if (len < sizeof(elf32_hdr_t)) return -1;
+    return elf_validate((const elf32_hdr_t *)img);
 }
 
 static void elf_placeholder(void) {

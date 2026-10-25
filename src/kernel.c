@@ -423,7 +423,7 @@ static void cmd_pkg(const char *args) {
         if (r==0) kprintf("Removed '%s'\n", rest2);
         else if (r==-1) kprintf("pkg: unknown package '%s'\n", rest2);
         else if (r==-2) vga_puts("pkg: no disk mounted\n");
-        else vga_puts("pkg: not installed\n");
+        else vga_puts("pkg: built-in programs are part of the system\n");
     } else if (kstrcmp(sub,"info")==0) {
         int found=0;
         for (int i=0;i<pkg_count();i++) {

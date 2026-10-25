@@ -19,7 +19,8 @@
 #define KERN_BASE        0x00100000
 #define VMALLOC_BASE     0x10000000
 #define VMALLOC_END      0x11000000
-#define USER_BASE        0x40000000
+#define USER_CODE_BASE   0x00400000
+#define USER_CODE_END    0x00800000
 
 /* Every process's ring-3 stack lives at the same fixed location, growing
    down from here - shared by elf.c (initial spawn), syscall.c (execve's
