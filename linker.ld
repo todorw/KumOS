@@ -28,3 +28,5 @@ SECTIONS {
     . = ALIGN(4096);
     _kernel_end = .;
 }
+
+ASSERT(_kernel_end <= 0x400000, "kernel image grew into 0x400000, where user programs load")
