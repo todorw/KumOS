@@ -84,6 +84,8 @@ static void mouse_irq(registers_t *r) {
 
 void mouse_set_bounds(int32_t mx, int32_t my) {
     max_x = mx; max_y = my;
+    state.x = mx / 2;
+    state.y = my / 2;
 }
 
 void mouse_init(void) {
