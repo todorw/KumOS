@@ -80,19 +80,25 @@ static inline void irq_restore(uint32_t flags) {
    (about 3% of a typical 127MB machine) from the general allocator
    entirely closes the whole class of bug in one place, instead of
    auditing every pmm_alloc()-then-kmemset() call site in the codebase. */
+static uint32_t pmm_hint = 0;
+
 uint32_t pmm_alloc(void) {
-    uint32_t pde1_lo = frame_idx(0x00400000), pde1_hi = frame_idx(0x00800000);
+    uint32_t lo = frame_idx(KERNEL_RESERVED_END);
+    uint32_t hi = pmm_base_frame + pmm_total_frames;
+    if (hi > PMM_MAX_FRAMES) hi = PMM_MAX_FRAMES;
+    if (lo >= hi) return 0;
     uint32_t flags = irq_save_cli();
     uint32_t result = 0;
-    for (uint32_t i = pmm_base_frame; i < pmm_base_frame + pmm_total_frames; i++) {
-        if (i >= PMM_MAX_FRAMES) break;
-        if (i >= pde1_lo && i < pde1_hi) continue;
+    uint32_t i = (pmm_hint >= lo && pmm_hint < hi) ? pmm_hint : lo;
+    for (uint32_t n = hi - lo; n; n--) {
         if (pmm_refs[i] == 0) {
             pmm_refs[i] = 1;
             pmm_used_frames++;
             result = i * PAGE_SIZE;
+            pmm_hint = i + 1;
             break;
         }
+        if (++i >= hi) i = lo;
     }
     irq_restore(flags);
     return result;
@@ -119,8 +125,10 @@ void pmm_free(uint32_t addr) {
 
 void pmm_ref(uint32_t addr) {
     uint32_t idx = frame_idx(addr);
+    uint32_t flags = irq_save_cli();
     if (idx < PMM_MAX_FRAMES && pmm_refs[idx] < 254)
         pmm_refs[idx]++;
+    irq_restore(flags);
 }
 
 uint32_t pmm_refcount(uint32_t addr) {
