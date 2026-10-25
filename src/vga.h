@@ -25,6 +25,7 @@ typedef enum {
 
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25
+#define VGA_TTYS   3
 
 /* CP437 box-drawing / shading glyphs (raw font code points, not ASCII) */
 #define VGA_CH_HLINE   0xC4  /* ─ */
@@ -60,7 +61,9 @@ void vga_put_hex(uint32_t val);
 void vga_put_dec(uint32_t val);
 void vga_font_snapshot(void);
 void vga_font_restore(void);
-const uint16_t *vga_shadow_buffer(void);
 int  vga_cursor_visible(void);
+const uint16_t *vga_tty_buffer(int tty);
+int  vga_tty_cursor(int tty, int *row, int *col);
+void vga_tty_reset(int tty);
 
 #endif
