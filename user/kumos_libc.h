@@ -1,4 +1,3 @@
-
 #ifndef KUMOS_LIBC_H
 #define KUMOS_LIBC_H
 
@@ -335,13 +334,7 @@ static inline int sys_signal(int sig, void (*handler)(int)) {
 static inline int sys_fork(void) {
     return _syscall(20, 0, 0, 0);
 }
-/* Job control: SIGSTOP=19/SIGCONT=18 match src/signal.h. sys_waitstatus()
-   is sys_waitpid() plus Ctrl+Z awareness - returns 1 if the child exited
-   (code written to *status), 2 if the child got stopped instead (job
-   control - not reaped, kush registers it as a background job), 0 if no
-   such pid. sys_procstate() is a non-blocking peek at a pid's job-control
-   state for `jobs`/fg/bg: 0=running, 1=stopped, 2=exited-not-reaped,
-   -1=gone. */
+
 #define KUSH_SIGCONT 18
 #define KUSH_SIGSTOP 19
 static inline int sys_waitstatus(int pid, int *status) {
@@ -481,7 +474,6 @@ static char *strtok(char *str, const char *delim) {
     return strtok_r(str, delim, &saved);
 }
 
-
 static char *strstr(const char *hay, const char *needle) {
     if (!*needle) return (char*)hay;
     for (; *hay; hay++) {
@@ -547,7 +539,6 @@ static inline char *strncat(char *dst, const char *src, size_t n) {
 
 #define kmemset  memset
 #define kmemcpy  memcpy
-
 
 static inline int execve(const char *path, char *const argv[]) {
     int r; __asm__ volatile("int $0x80":"=a"(r):"a"(44),"b"(path),"c"(argv):"memory"); return r;

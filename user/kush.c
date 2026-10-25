@@ -1,19 +1,5 @@
-
 #include "kumos_libc.h"
 
-/* All of these need a "memory" clobber - without it, GCC doesn't know the
-   int 0x80 call writes through a pointer argument (fds/buf/st) and is free
-   to keep a stale cached copy of anything it thinks it already knows the
-   value of, instead of reloading from memory afterward. kumos_libc.h's own
-   _syscall() already has this; these were hand-duplicated here without it.
-   Real, reproducible bug: sys_pipe() on a freshly-declared, compiler-known
-   {-1,-1} array let GCC skip the reload and pass -1 to the very next
-   sys_dup2() call, silently no-opping the pipe redirect (output leaked
-   straight to the console instead of into the pipe) - only surfaced once
-   run_pipeline()'s pipe-stage loop put pipefd[] in a shape (freshly
-   re-declared each iteration) the optimizer could exploit; the single,
-   outer-scope pipefd[] the old 2-stage-only code used happened not to
-   trigger it. */
 static inline int sys_pipe(int fds[2]) {
     int r; __asm__ volatile("int $0x80":"=a"(r):"a"(21),"b"(fds):"memory"); return r;
 }
@@ -73,13 +59,6 @@ static int split(char *line, char *argv[], int max) {
     return argc;
 }
 
-/* No -e flag needed/supported (kush's tokenizer has no quoting, so a flag
-   before a string with spaces wouldn't parse cleanly anyway) - backslash
-   escapes are just always decoded, same default-on behavior as dash/sh's
-   builtin echo. Mainly \e matters here: it's the only way to type a real
-   ESC byte at the kush prompt to drive the VGA ANSI parser by hand (e.g.
-   `echo "\e[?1049h"` for the alt screen buffer) since kush has no way to
-   insert a literal control character into a typed line otherwise. */
 static int do_echo(char *argv[], int argc) {
     for (int i=1;i<argc;i++) {
         const char *s = argv[i];
@@ -194,7 +173,6 @@ static int do_uniq(char *argv[], int argc) {
     return 0;
 }
 
-/* accepts both "-n N" (two args) and "-N" (bundled), like real head/tail */
 static int parse_n_flag(char *argv[], int argc, int *fi_out) {
     int n = 10, fi = 1;
     if (argc>2 && !strcmp(argv[1],"-n")) { n = atoi(argv[2]); fi = 3; }
@@ -260,9 +238,7 @@ static int do_grep(char *argv[], int argc) {
         if (strstr(p,pat)) { fputs(p); putchar('\n'); found = 1; }
         p = nl ? nl+1 : p+strlen(p);
     }
-    /* real grep exit status: 0 if a match was found, 1 if not - this is
-       what makes `if grep pat file` (or in a script's if/while condition)
-       actually mean something instead of always being true. */
+
     return found ? 0 : 1;
 }
 
@@ -331,10 +307,6 @@ static int do_stat(char *argv[], int argc) {
     return 0;
 }
 
-/* Toggles the real on-disk FAT12 read-only attribute bit (src/fat12.c),
-   not a fabricated permission model - the only per-file access control
-   this filesystem format actually has, and only /disk has it (no on-disk
-   representation on /mem or /dev to attach a bit to). */
 static int do_chmod(char *argv[], int argc) {
     if (argc < 3) { fputs("chmod: chmod <mode> <file>\n"); return 1; }
     if (sys_chmod(argv[2], argv[1]) == 0) { printf("chmod: %s: %s\n", argv[2], argv[1]); return 0; }
@@ -342,9 +314,6 @@ static int do_chmod(char *argv[], int argc) {
     return 1;
 }
 
-/* Non-recursive filename search (ls itself is non-recursive too - there's
-   no directory-tree-walk API in the vfs layer yet to build a real
-   recursive find on top of). */
 static int do_find(char *argv[], int argc) {
     if (argc < 2) { fputs("find: find [dir] <name>\n"); return 1; }
     const char *pat  = argv[argc-1];
@@ -395,8 +364,6 @@ static int do_du(char *argv[], int argc) {
     return 0;
 }
 
-/* Basic sed s/old/new/ [g] substitution - one expression, one file (or
-   stdin), no full regex, no other sed commands. */
 static int do_sed(char *argv[], int argc) {
     if (argc < 2 || argv[1][0] != 's' || argv[1][1] != '/') { fputs("sed: sed s/old/new/[g] [file]\n"); return 1; }
 
@@ -441,13 +408,6 @@ static int do_sed(char *argv[], int argc) {
     return 0;
 }
 
-/* Line-by-line diff, classic "< a-line" / "> b-line" format for lines
-   that differ at the same line number, plus a trailer if one file has
-   extra lines the other doesn't. No real line-matching/hunk algorithm
-   (that's a much bigger feature) - just a positional compare, which is
-   still genuinely useful for "did this file change" style checks.
-   Returns 0 if identical, 1 if different - same convention as real
-   diff, so `if diff a b` works in scripts. */
 static int do_diff(char *argv[], int argc) {
     if (argc < 3) { fputs("diff: diff <file1> <file2>\n"); return 2; }
 
@@ -578,15 +538,6 @@ static int do_help(char *argv[], int argc) {
     return 0;
 }
 
-/* Job control: background (&), jobs/fg/bg/wait. A single external command
-   backgrounds via do_exec() just skipping its own waitpid (g_bg_next,
-   set by run_pipeline()'s un-piped single-command path). An N-stage
-   pipeline ("a | b &") has no single do_exec() fork to skip - run_pipeline()
-   forks its own whole driver once instead and backgrounds *that* (see the
-   nparts>1 branch). Builtins alone (no external command anywhere in the
-   line) still can't usefully be backgrounded - they run in-process with
-   no fork of their own - a bare "&" on one is silently a no-op, same as
-   in a real shell backgrounding a shell keyword. */
 #define KUSH_MAX_JOBS 8
 typedef struct {
     int  used;
@@ -624,7 +575,6 @@ static kush_job_t *job_last(void) {
     return best;
 }
 
-/* Second-most-recent job by id - the "%-" job. */
 static kush_job_t *job_prev(void) {
     kush_job_t *first = 0, *second = 0;
     for (int i = 0; i < KUSH_MAX_JOBS; i++) {
@@ -635,10 +585,6 @@ static kush_job_t *job_prev(void) {
     return second;
 }
 
-/* Resolves a job-control argument the way real shells do: "%N"/"N" is a
-   job id, "%+"/"%%" is the current (most recent) job, "%-" is the
-   previous one. Shared by fg/bg/wait so all three accept the same
-   spelling. */
 static kush_job_t *job_by_spec(const char *spec) {
     if (!spec || !spec[0]) return job_last();
     if (spec[0] == '%') spec++;
@@ -647,11 +593,6 @@ static kush_job_t *job_by_spec(const char *spec) {
     return job_find(atoi(spec));
 }
 
-/* Reaps any background job that finished on its own (sys_procstate()==2,
-   exited but not yet waited on) and prints the "Done" line a real shell
-   shows just before its next prompt. Non-blocking - sys_waitstatus() on an
-   already-zombie pid returns immediately, it's only a blocking loop while
-   the child is still alive. */
 static void jobs_reap_done(void) {
     for (int i = 0; i < KUSH_MAX_JOBS; i++) {
         if (!g_jobs[i].used) continue;
@@ -681,11 +622,6 @@ static int do_jobs(char *argv[], int argc) {
     return 0;
 }
 
-/* Blocks on a job's pid exactly like a freshly-forked foreground command
-   would (same sys_waitstatus() path do_exec() uses) - shared by fg and
-   wait so a re-stopped or Ctrl+C'd job re-enters the job table correctly
-   either way, in both callers. Removes j from the job table up front
-   (re-added under a fresh id if it stops again, same as do_exec()). */
 static int job_wait_fg(kush_job_t *j) {
     int pid = j->pid;
     char cmd[48]; strncpy(cmd, j->cmd, sizeof(cmd)-1); cmd[sizeof(cmd)-1]=0;
@@ -701,8 +637,6 @@ static int job_wait_fg(kush_job_t *j) {
     return status;
 }
 
-/* fg [%N] - bring a job to the foreground: SIGCONT it if stopped, then
-   block on it. */
 static int do_fg(char *argv[], int argc) {
     kush_job_t *j = (argc > 1) ? job_by_spec(argv[1]) : job_last();
     if (!j) { fputs("kush: fg: no such job\n"); return 1; }
@@ -711,9 +645,6 @@ static int do_fg(char *argv[], int argc) {
     return job_wait_fg(j);
 }
 
-/* bg [%N] - resume a stopped job in the background: SIGCONT it, leave it
-   in the job table, don't wait. No-op (with a message) on a job that's
-   already running. */
 static int do_bg(char *argv[], int argc) {
     kush_job_t *j = (argc > 1) ? job_by_spec(argv[1]) : job_last();
     if (!j) { fputs("kush: bg: no such job\n"); return 1; }
@@ -723,12 +654,6 @@ static int do_bg(char *argv[], int argc) {
     return 0;
 }
 
-/* wait [%N] - with no argument, blocks until every current background job
-   has exited (real POSIX semantics: doesn't touch jobs that get started
-   after wait begins, but that's not possible here since kush is single-
-   threaded and can't start a new one mid-wait anyway). With an argument,
-   waits for just that one job. A job that gets stopped instead of exiting
-   re-enters the job table exactly like fg does rather than hanging. */
 static int do_wait(char *argv[], int argc) {
     if (argc > 1) {
         kush_job_t *j = job_by_spec(argv[1]);
@@ -753,62 +678,6 @@ static int do_exec(char *argv[], int argc) {
 
     if (!strchr(upper, '.')) { strcat(upper, ".ELF"); }
 
-    /* Real fork()+execve()+waitpid(), finally. This took six real bugs
-       across this round and the previous ones to actually nail down:
-       1) paging_clone_dir() aliased PDE 1 (virt 0x400000, where every user
-          ELF's code loads) instead of deep-copying it - fixed in
-          src/paging.c (round 14).
-       2) sched_yield() had a premature `sti` before the stack-pointer
-          swap in switch_context(), letting a nested timer tick corrupt a
-          mid-switch task's register frame - fixed in boot/sched_switch.asm
-          + src/sched.c (round 14).
-       3) Every fork()'d child leaked its entire private page directory on
-          exit (sched_exit_code() freed the kernel stack but never touched
-          page_dir_phys) - fixed in src/sched.c.
-       4) sc_execve() freed the caller's own page directory (still the
-          live CR3!) *before* building and switching to the replacement -
-          a real use-after-free of actively-mapped page tables. Fixed by
-          building+switching first, freeing the old one only once it's no
-          longer live - src/syscall.c.
-       5) The actual root cause of the long-standing "return to ring3 after
-          waitpid lands in garbage EIP/ESP" bug, finally nailed down with a
-          hardware watchpoint: paging_clone_dir()'s "PDE1 is special, deep-
-          copy it" fix (bug #1 above) missed that the user STACK needs the
-          exact same treatment. ELF_USER_STACK_TOP is exactly 0x40000000
-          (1GB) and the stack grows down from there, landing at virt
-          0x3FFFC000-0x3FFFFFFF - PDE 255, one PDE short of the ">=256 is
-          always private" boundary the function assumed covered the whole
-          per-process range. PDE 255 was being ALIASED (raw pointer share)
-          across fork(), so a forked child's stack lived in the exact same
-          physical page table as its parent's. fork() alone (child never
-          touching stack pages beyond what it inherited) happened not to
-          visibly corrupt anything, but execve() unconditionally remaps
-          fresh stack pages - and since that remap hit the shared table, an
-          execve()'d child silently overwrote its own parent's live stack
-          contents out from under it. Confirmed live: kush's own saved
-          return address flipped from a valid value to 0 at the exact
-          instant its execve()'d child (hello.elf) zeroed its own fresh
-          stack page. kush's syscall-return machinery (isr128, the fabri-
-          cated iret frame, switch_context) was correct the entire time -
-          fixed in src/paging.c (paging_clone_dir()/paging_free_user()).
-       6) One more crash survived all five fixes above, but only on the
-          SECOND fork()+execve() in a row (any two programs, not sysinfo-
-          specific) - a plain kmemcpy() page fault at exactly CR2=0x1000000
-          (16MB). paging_init() only ever identity-mapped the first 16MB of
-          physical RAM (4 static page tables, a leftover fixed constant),
-          but pmm_alloc() hands out physical frames anywhere across all of
-          mem_kb - and paging_clone_dir() (plus other code) treats whatever
-          pmm_alloc() returns as a directly-dereferenceable kernel pointer
-          via that identity mapping. The first fork()+exec() consumed just
-          barely enough memory (clone + ELF pages + both now-deep-copied
-          stacks) to still land under 16MB; the second one reliably pushed
-          pmm_alloc() past it. Fixed by sizing the identity map to actual
-          RAM at boot instead of a fixed 16MB - src/paging.c (paging_init()).
-       Also fixed along the way: sc_exit() silently discarded its own
-       `code` argument and always exited 0 (never seen because nothing
-       ever chained fork()+wait() far enough to observe a real child exit
-       code before), and sys_fork()'s inline asm was missing the "memory"
-       clobber every other syscall wrapper already has. */
     int pid = sys_fork();
     if (pid < 0) { printf("kush: fork failed\n"); return 1; }
     if (pid == 0) {
@@ -883,16 +752,6 @@ static int dispatch_one(char *argv[], int argc) {
     return do_exec(argv, argc);
 }
 
-/* Strips >, >>, < tokens (and their filename argument) out of argv,
-   compacting the remaining args in place. Requires whitespace around the
-   operator, same as split()'s space-only tokenizing - "cmd>file" with no
-   spaces isn't recognized, only "cmd > file". */
-/* Strips a trailing bare "&" token (background job marker) off argv, same
-   in-place-compaction style as parse_redir() below. Used on the un-piped
-   single-command path in run_pipeline() - do_exec() backgrounds those by
-   skipping its own waitpid. N-stage pipelines get backgrounded a
-   different way (see strip_bg_str() and the nparts>1 branch further
-   down) since there's no single do_exec() fork to skip there. */
 static int strip_bg(char *argv[], int *argc) {
     if (*argc > 0 && !strcmp(argv[*argc-1], "&")) {
         (*argc)--;
@@ -902,10 +761,6 @@ static int strip_bg(char *argv[], int *argc) {
     return 0;
 }
 
-/* Same job as strip_bg() above but works on the raw, not-yet-split text of
-   a pipeline's last stage - "&" has to be its own whitespace-delimited
-   token, not just a trailing character (so a filename ending in "&"
-   through redirection isn't mistaken for one). */
 static int strip_bg_str(char *s) {
     int len = (int)strlen(s);
     while (len > 0 && s[len-1] == ' ') len--;
@@ -930,10 +785,6 @@ static void parse_redir(char *argv[], int *argc, char **out_file, int *append, c
     *argc = j;
 }
 
-/* Shell variables: VAR=value assignment + $VAR expansion. This is the
-   scoped-down piece of "scripting" that landed - real control flow
-   (if/for/while) would need a proper parser/interpreter and didn't fit
-   in the time available this round. */
 #define KUSH_MAX_VARS 16
 #define KUSH_VAR_NAME 32
 #define KUSH_VAR_VAL  192
@@ -968,8 +819,6 @@ static void do_set(void) {
     for (int i=0;i<nvars;i++) printf("%s=%s\n", var_names[i], var_vals[i]);
 }
 
-/* NAME=value with no spaces around '=' - consumes the whole line as an
-   assignment (not dispatched as a command) if it matches. */
 static int try_assign(const char *line) {
     const char *p = line;
     if (!(( *p>='A'&&*p<='Z')||(*p>='a'&&*p<='z')||*p=='_')) return 0;
@@ -1027,10 +876,6 @@ static void do_alias_list(void) {
     for (int i=0;i<nalias;i++) printf("alias %s='%s'\n", alias_names[i], alias_vals[i]);
 }
 
-/* "alias" with no args lists them, "alias name=value" defines one - handled
-   as a whole-line special case (like try_assign) rather than a normal
-   dispatch_one builtin, since it needs the raw unsplit line to capture a
-   multi-word value after the '='. */
 static int try_alias_cmd(const char *line) {
     if (strncmp(line,"alias",5) != 0) return 0;
     if (line[5] != 0 && line[5] != ' ') return 0;
@@ -1046,9 +891,6 @@ static int try_alias_cmd(const char *line) {
     return 1;
 }
 
-/* Expands a leading alias reference by splicing its value in place of the
-   first word - single pass, non-recursive (an alias whose value is itself
-   an alias name won't chain, a deliberate simplification). */
 static void expand_alias(char *line, int max) {
     char first[KUSH_ALIAS_NAME]; int fi=0;
     char *q = line;
@@ -1064,12 +906,6 @@ static void expand_alias(char *line, int max) {
 }
 
 static int run_pipeline(char *line) {
-
-    /* cmd1; cmd2; cmd3 - run sequentially left to right, each segment
-       fully independent (its own var/alias expansion, its own pipe
-       parsing), same as putting them on separate lines in a script.
-       kush has no quoting at all yet, so a literal ';' can't currently
-       appear inside an argument - not handling that case. */
     {
         char *semi = strchr(line, ';');
         if (semi) {
@@ -1096,10 +932,6 @@ static int run_pipeline(char *line) {
     expand_alias(expanded, CMD_MAX);
     line = expanded;
 
-    /* Snapshot before the '|' tokenizer below starts overwriting bytes of
-       `line` with NULs - only actually used as a job's display name if
-       this turns out to be a backgrounded N-stage pipeline, but cheap
-       enough (CMD_MAX=256) to always take. */
     char pipeline_src[CMD_MAX];
     strncpy(pipeline_src, line, sizeof(pipeline_src)-1);
     pipeline_src[sizeof(pipeline_src)-1] = 0;
@@ -1113,7 +945,6 @@ static int run_pipeline(char *line) {
     }
 
     if (nparts == 1) {
-
         char *argv[ARG_MAX]; int argc = split(parts[0], argv, ARG_MAX);
         if (!argc) return 0;
 
@@ -1124,14 +955,6 @@ static int run_pipeline(char *line) {
         parse_redir(argv, &argc, &out_file, &append, &in_file);
         if (!argc) return 0;
 
-        /* vfs_dup2() only refcounts pipes, not regular files - closing
-           the original fd right after dup2'ing it onto 1/0 (the way the
-           pipe code below does) frees the underlying FAT12 file handle
-           the dup'd descriptor still depends on, so every write after
-           that silently goes nowhere (file gets created via O_CREAT but
-           stays 0 bytes). Fix: keep the original fd open until *after*
-           fd 1/0 have been restored to their saved values, so it's no
-           longer aliased by anything when it's finally closed. */
         int out_fd = -1, in_fd = -1;
         int saved_out = -1, saved_in = -1;
         if (out_file) {
@@ -1163,24 +986,8 @@ static int run_pipeline(char *line) {
         return ret;
     }
 
-    /* Whole-pipeline background ("a | b &"): unlike the single-command
-       case, there's no single do_exec() fork here to just skip the wait
-       on - a pipeline's stages already run through this same function
-       sequentially (see the loop below), so instead the whole driver
-       forks *itself* once. The child runs the stage loop exactly as the
-       foreground case would and exits with the result; the parent (the
-       interactive kush the user is typing into) registers the forked pid
-       as a job and returns immediately without touching the stage loop
-       at all. This nests fork() one level deeper than usual - each
-       stage's do_exec() still forks its own child from *inside* this
-       already-forked pipeline driver - but that's the same fork/execve/
-       waitpid path already verified solid, just invoked from a process
-       that itself came from fork() instead of from kush's original pid. */
     int pipeline_bg = strip_bg_str(parts[nparts-1]);
     if (pipeline_bg) {
-        /* pipeline_src was snapshotted before the "&" got stripped off
-           parts[] above - strip it here too so the job table shows the
-           bare pipeline ("ls /disk | grep") instead of trailing "&". */
         strip_bg_str(pipeline_src);
         int pid = sys_fork();
         if (pid < 0) { fputs("kush: fork failed\n"); return 1; }
@@ -1189,18 +996,8 @@ static int run_pipeline(char *line) {
             printf("[%d] %d\n", jid, pid);
             return 0;
         }
-        /* child falls through to the normal stage loop below, then must
-           exit (not return) at the bottom - it's a forked copy of the
-           whole shell, returning would drop back into the interactive
-           read loop as a second kush fighting over the same console. */
     }
 
-    /* N-stage pipeline (a|b|c|...). Builtins run in-process (no fork), so
-       each stage runs to full completion before the next one starts -
-       stage i's whole output goes into a pipe, then stage i+1 reads it
-       back out. Was hardcoded to exactly 2 stages (parts[0]/parts[1]),
-       silently dropping anything past the second '|' - now loops over
-       however many stages split() found (up to 8). */
     int prev_read = -1;
     int last_ret = 0;
     for (int i = 0; i < nparts; i++) {
@@ -1210,13 +1007,6 @@ static int run_pipeline(char *line) {
         int is_first = (i == 0);
         int is_last  = (i == nparts - 1);
 
-        /* `< infile | ...` on the first stage, `... | cmd > outfile` on
-           the last - was only ever handled for a lone (non-piped)
-           command, so e.g. `cat file | grep x > out.txt` silently passed
-           ">" and "out.txt" as literal arguments to grep instead of
-           redirecting. Mid-pipeline redirects on stages in between don't
-           make much sense (their fds are already wired to the pipe) so
-           those aren't parsed for redirect tokens at all. */
         char *out_file = 0, *in_file = 0; int append = 0;
         if (is_first || is_last) parse_redir(argv, &argc, &out_file, &append, &in_file);
         if (!argc) { if (prev_read >= 0) close(prev_read); return 0; }
@@ -1252,8 +1042,6 @@ static int run_pipeline(char *line) {
             sys_dup2(redir_out_fd, 1);
         }
 
-        /* Routes through dispatch_one itself (not a hand-copied builtin
-           subset) so every builtin works as a pipe stage automatically. */
         last_ret = dispatch_one(argv, argc);
 
         if (saved_stdout >= 0) { sys_dup2(saved_stdout, 1); close(saved_stdout); }
@@ -1263,9 +1051,7 @@ static int run_pipeline(char *line) {
 
         prev_read = is_last ? -1 : pipefd[0];
     }
-    /* Real pipeline exit status: the last stage's, not always 0 - so
-       `if a | b` (used heavily by scripts, e.g. `if cmd | grep pat`)
-       actually reflects whether the pipeline succeeded. */
+
     if (pipeline_bg) exit(last_ret);
     return last_ret;
 }
@@ -1275,7 +1061,6 @@ static void print_prompt(void) {
     printf("\033[32mkush\033[0m:\033[36m%s\033[0m$ ", cwd_buf);
 }
 
-/* fastfetch-style: logo left, real system info right, row for row */
 static void motd(void) {
     const char *logo[6] = {
         "  _  ___   _ ____  _   _  ",
@@ -1307,22 +1092,8 @@ static void motd(void) {
     fputs("\n");
 }
 
-/* Real control flow for scripts: if/elif/then/else/fi, for VAR in .../do/
-   done, while <cmd>/do/done, break/continue. Deliberately scoped down
-   from real shell syntax - each keyword needs its own line (no "if cond;
-   then" on one line) - to keep the block matcher a simple depth counter
-   instead of a real tokenizer. Nesting works (any mix of if/for/while).
-   Still no arithmetic, no functions. */
 #define SCRIPT_MAX_LINES 200
 
-/* break/continue can't just `return` out of the loop's own C for/while -
-   they're hit inside script_exec_block(), which may be several levels of
-   *nested* recursive calls deep (e.g. break inside an if inside a while).
-   These flags let a break/continue unwind back up through every enclosing
-   non-loop block (checked at the top of script_exec_block's own loop) and
-   get caught by the nearest actual while/for, same idea as a real
-   language's loop-unwind, just done by hand with two static flags instead
-   of a real exception mechanism. */
 static int loop_break    = 0;
 static int loop_continue = 0;
 
@@ -1333,10 +1104,6 @@ static int is_block_close(const char *l) {
     return !strcmp(l,"fi") || !strcmp(l,"done");
 }
 
-/* Advances *idx to the matching fi/done for the block whose body starts
-   at *idx (already past the opening line), landing ON that close line -
-   used both for "skip the branch we're not taking" and "find where a
-   loop body ends" duty. */
 static void skip_block(char *lines[], int n, int *idx) {
     int depth = 1;
     while (*idx < n) {
@@ -1347,9 +1114,6 @@ static void skip_block(char *lines[], int n, int *idx) {
     }
 }
 
-/* Same, but also stops early on a same-depth "else"/"elif" (for skipping
-   an if/elif-branch that wasn't taken, which needs to land on whichever
-   of else/elif/fi comes next so the if-handler can decide what to do). */
 static void skip_to_else_or_close(char *lines[], int n, int *idx) {
     int depth = 1;
     while (*idx < n) {
@@ -1384,7 +1148,6 @@ static int script_exec_block(char *lines[], int n, int *idx) {
             if (cret == 0) { matched = 1; ret = script_exec_block(lines, n, idx); }
             else            skip_to_else_or_close(lines, n, idx);
 
-            /* any number of elif clauses, first matching one wins */
             while (!matched && *idx<n && !strncmp(lines[*idx],"elif ",5)) {
                 char econd[CMD_MAX]; strncpy(econd, lines[*idx]+5, CMD_MAX-1); econd[CMD_MAX-1]=0;
                 (*idx)++;
@@ -1409,7 +1172,7 @@ static int script_exec_block(char *lines[], int n, int *idx) {
             if (*idx<n && !strcmp(lines[*idx],"do")) (*idx)++;
             int body_start = *idx;
 
-            int guard = 0; /* hard cap - a script bug shouldn't hang the shell forever */
+            int guard = 0;
             while (run_pipeline(cond) == 0 && guard < 10000) {
                 int bi = body_start;
                 ret = script_exec_block(lines, n, &bi);
@@ -1490,7 +1253,6 @@ int main(void) {
     int last_exit = 0;
 
     for (;;) {
-
         jobs_reap_done();
         if (last_exit != 0) printf("[%d] ", last_exit);
         print_prompt();
