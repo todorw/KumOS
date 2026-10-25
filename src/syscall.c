@@ -68,10 +68,15 @@ static uint32_t sc_write(uint32_t buf_addr, uint32_t len, uint32_t c) {
 static uint32_t sc_read(uint32_t buf_addr, uint32_t len, uint32_t c) {
     (void)c;
     if (len == 0) return 0;
-    if (len > 256) len = 256;
+    if (len > 4096) len = 4096;
     if (!ubuf_w(buf_addr, len)) return 0;
     char *buf = (char *)buf_addr;
-    return (uint32_t)keyboard_getline(buf, (int)len);
+    if (vfs_isatty(0)) {
+        int n = keyboard_getline(buf, len > 256 ? 256 : (int)len);
+        return n < 0 ? 0 : (uint32_t)n;
+    }
+    int n = vfs_read(0, buf, len);
+    return n < 0 ? 0 : (uint32_t)n;
 }
 
 static uint32_t sc_getpid(uint32_t a, uint32_t b, uint32_t c) {
@@ -81,7 +86,7 @@ static uint32_t sc_getpid(uint32_t a, uint32_t b, uint32_t c) {
 
 static uint32_t sc_sleep(uint32_t ms, uint32_t b, uint32_t c) {
     (void)b; (void)c;
-    timer_sleep(ms);
+    sched_sleep(ms);
     return 0;
 }
 
@@ -120,12 +125,14 @@ static uint32_t sc_waitpid(uint32_t pid, uint32_t b, uint32_t c) {
 
 static uint32_t sc_wait(uint32_t code_ptr, uint32_t b, uint32_t c) {
     (void)b; (void)c;
-    return (uint32_t)sched_wait((int *)(code_ptr ? code_ptr : 0));
+    if (code_ptr && !ubuf_w(code_ptr, sizeof(int))) return (uint32_t)-1;
+    return (uint32_t)sched_wait((int *)code_ptr);
 }
 
 static uint32_t sc_waitstatus(uint32_t pid, uint32_t code_ptr, uint32_t c) {
     (void)c;
-    return (uint32_t)sched_waitstatus((int)pid, (int *)(code_ptr ? code_ptr : 0));
+    if (code_ptr && !ubuf_w(code_ptr, sizeof(int))) return (uint32_t)-1;
+    return (uint32_t)sched_waitstatus((int)pid, (int *)code_ptr);
 }
 
 static uint32_t sc_procstate(uint32_t pid, uint32_t b, uint32_t c) {
