@@ -1,8 +1,7 @@
-/* KumOS Kernel Linker Script */
 ENTRY(_start)
 
 SECTIONS {
-    . = 0x00100000;     /* Load at 1MB */
+    . = 0x00100000;
 
     .multiboot : {
         *(.multiboot)

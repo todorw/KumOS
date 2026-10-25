@@ -1,4 +1,3 @@
-
 global gdt_flush
 global tss_flush
 

@@ -1,4 +1,3 @@
-
 global lidt_flush
 
 section .note.GNU-stack noalloc noexec nowrite progbits
@@ -151,9 +150,6 @@ isr128:
     call syscall_dispatch
     add esp, 4
 
-    ; overwrite the pushed EAX slot with the return value so popa
-    ; restores it correctly (offsets: gs,fs,es,ds = 16 bytes, then
-    ; edi,esi,ebp,esp_dummy,ebx,edx,ecx = 28 bytes to reach eax)
     mov [esp+16+28], eax
 
     pop gs
