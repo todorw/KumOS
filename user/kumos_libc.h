@@ -563,12 +563,12 @@ static inline int args_line(char *buf, int max) {
     return n;
 }
 
-int main();
+int __kumos_main(int argc, char **argv) __asm__("main");
 
 void _start(int argc, char **argv) {
     __argc = argc;
     __argv = argv;
-    exit(main(argc, argv));
+    exit(__kumos_main(argc, argv));
 }
 
 #endif
