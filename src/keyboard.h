@@ -44,4 +44,6 @@ int keyboard_check_ctrlz(void);
    completion key) is never touched. */
 int keyboard_check_alttab(void);
 
+void keyboard_inject(const char *s);
+
 #endif

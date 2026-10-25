@@ -4,6 +4,9 @@
 #include "vga.h"
 #include "kstring.h"
 #include "gui.h"
+#include "irq.h"
+#include "sched.h"
+#include "signal.h"
 #include <stdint.h>
 
 #define KB_DATA     0x60
@@ -15,6 +18,7 @@
 
 #define KB_OBF      0x01
 #define KB_IBF      0x02
+#define KB_AUX      0x20
 
 #define KB_BUF  256
 static volatile char buf[KB_BUF];
@@ -75,17 +79,16 @@ static void process_scancode(uint8_t sc) {
 
     if (sc & 0x80) {
         sc &= 0x7F;
-        if (!ext) {
-            if (sc==0x2A||sc==0x36) shift=0;
-            if (sc==0x1D) ctrl=0;
-            if (sc==0x38) alt=0;
-        }
+        if (!ext && (sc==0x2A||sc==0x36)) shift=0;
+        if (sc==0x1D) ctrl=0;
+        if (sc==0x38) alt=0;
         ext = 0; return;
     }
 
     if (ext) {
         ext = 0;
         if (sc==0x1D) { ctrl=1; return; }
+        if (sc==0x38) { alt=1; return; }
         char special = 0;
         switch (sc) {
             case 0x48: special = KEY_UP;    break;
@@ -124,30 +127,36 @@ static void process_scancode(uint8_t sc) {
 
 static void kb_irq(registers_t *r) {
     (void)r;
-    if (!(inb(KB_STATUS) & KB_OBF)) return;
+    uint8_t st = inb(KB_STATUS);
+    if (!(st & KB_OBF) || (st & KB_AUX)) return;
     process_scancode(inb(KB_DATA));
 }
 
+static char queue_pop(void) {
+    if (bhead == btail) return 0;
+    char c = buf[btail];
+    btail = (btail + 1) % KB_BUF;
+    return c;
+}
+
 static char poll_once(void) {
-    if (!(inb(KB_STATUS) & KB_OBF)) return 0;
-    uint8_t sc = inb(KB_DATA);
-    if (sc & 0x80) {
-        sc &= 0x7F;
-        if (!ext) {
-            if (sc==0x2A||sc==0x36) shift=0;
-            if (sc==0x1D) ctrl=0;
-            if (sc==0x38) alt=0;
-        }
-        ext = 0;
-        return 0;
-    }
+    uint32_t f = irq_save();
+    uint8_t st = inb(KB_STATUS);
+    if ((st & KB_OBF) && !(st & KB_AUX)) process_scancode(inb(KB_DATA));
+    char c = queue_pop();
+    irq_restore(f);
+    return c;
+}
 
-    process_scancode(sc);
-
-    if (bhead != btail) {
-        char c = buf[btail]; btail=(btail+1)%KB_BUF; return c;
+void keyboard_inject(const char *s) {
+    uint32_t f = irq_save();
+    for (; *s; s++) {
+        int next = (bhead + 1) % KB_BUF;
+        if (next == btail) break;
+        buf[bhead] = *s;
+        bhead = next;
     }
-    return 0;
+    irq_restore(f);
 }
 
 void keyboard_init(void) {
@@ -189,11 +198,6 @@ void keyboard_init(void) {
 }
 
 char keyboard_getchar(void) {
-
-    if (bhead != btail) {
-        char c = buf[btail]; btail=(btail+1)%KB_BUF; return c;
-    }
-
     return poll_once();
 }
 
@@ -206,11 +210,8 @@ char keyboard_getchar_blocking(void) {
            prompt) keeps winning the race against the GUI's own
            keyboard_getchar() poll for keystrokes meant for whichever
            window is actually focused. */
+        signal_check();
         if (!gui_ring3_input_focused()) { __asm__ volatile("sti; hlt"); continue; }
-
-        if (bhead != btail) {
-            char c = buf[btail]; btail=(btail+1)%KB_BUF; return c;
-        }
 
         char c = poll_once();
         if (c) return c;
@@ -303,6 +304,18 @@ int keyboard_getline(char *out, int maxlen) {
             kbd_hist_add(out);
             return len;
         }
+        else if (c == 3) {
+            vga_goto(start_row, start_col+len);
+            vga_puts("^C\n");
+            out[0] = 0;
+            signal_send(sched_current()->pid, SIGINT);
+            signal_check();
+            return 0;
+        }
+        else if (c == 4 && len == 0) {
+            out[0] = 0;
+            return -1;
+        }
         else if (c == '\b') {
             if (cur > 0) {
                 for (int i=cur-1;i<len-1;i++) out[i]=out[i+1];
@@ -372,55 +385,36 @@ int keyboard_ctrl_held(void) { return ctrl; }
 int keyboard_alt_held(void)  { return alt; }
 int keyboard_has_input(void) { return bhead != btail; }
 
-int keyboard_check_ctrlc(void) {
-    /* poll_once() pops+returns a char immediately if the scancode it
-       just processed produced one. If it's not Ctrl+C, push it back to
-       the front of the queue - this runs inside sched_waitpid()'s poll
-       loop, and eating a keystroke a foreground program is waiting to
-       read (instead of just checking for the one byte we care about)
-       would be a real regression, not just a missed interrupt. */
-    char c = poll_once();
-    if (c == 3) return 1;
-    if (c) { btail = (btail - 1 + KB_BUF) % KB_BUF; buf[btail] = c; }
-
+static int queue_take(char want) {
+    uint32_t f = irq_save();
+    uint8_t st = inb(KB_STATUS);
+    if ((st & KB_OBF) && !(st & KB_AUX)) process_scancode(inb(KB_DATA));
     for (int idx = btail; idx != bhead; idx = (idx+1)%KB_BUF) {
-        if (buf[idx] == 3) {
-            btail = (idx+1) % KB_BUF;
-            return 1;
+        if (buf[idx] != want) continue;
+        for (int j = idx; j != btail; ) {
+            int prev = (j - 1 + KB_BUF) % KB_BUF;
+            buf[j] = buf[prev];
+            j = prev;
         }
+        btail = (btail + 1) % KB_BUF;
+        irq_restore(f);
+        return 1;
     }
+    irq_restore(f);
     return 0;
 }
 
-int keyboard_check_ctrlz(void) {
-    /* Same scan-and-requeue approach as keyboard_check_ctrlc() above, just
-       for Ctrl+Z (ASCII 26/SUB) instead of Ctrl+C - process_scancode()
-       already turns Ctrl+letter into the real control code, so this is
-       purely a "is byte 26 sitting in the queue" check. */
-    char c = poll_once();
-    if (c == 26) return 1;
-    if (c) { btail = (btail - 1 + KB_BUF) % KB_BUF; buf[btail] = c; }
+int keyboard_check_ctrlc(void) {
+    if (!gui_ring3_input_focused()) return 0;
+    return queue_take(3);
+}
 
-    for (int idx = btail; idx != bhead; idx = (idx+1)%KB_BUF) {
-        if (buf[idx] == 26) {
-            btail = (idx+1) % KB_BUF;
-            return 1;
-        }
-    }
-    return 0;
+int keyboard_check_ctrlz(void) {
+    if (!gui_ring3_input_focused()) return 0;
+    return queue_take(26);
 }
 
 int keyboard_check_alttab(void) {
     if (!alt) return 0;
-    char c = poll_once();
-    if (c == '\t') return 1;
-    if (c) { btail = (btail - 1 + KB_BUF) % KB_BUF; buf[btail] = c; }
-
-    for (int idx = btail; idx != bhead; idx = (idx+1)%KB_BUF) {
-        if (buf[idx] == '\t') {
-            btail = (idx+1) % KB_BUF;
-            return 1;
-        }
-    }
-    return 0;
+    return queue_take('\t');
 }
