@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #define VFS_MAX_FD      32
+#define VFS_MAX_FILES   64
 #define VFS_MAX_PATH   128
 #define VFS_NAME_MAX    64
 
@@ -44,19 +45,22 @@ typedef struct {
 } vfs_mount_t;
 
 typedef struct {
-    int      used;
+    int      refs;
     int      flags;
     uint32_t pos;
     int      type;
     int      mount_idx;
     int      fd_data;
-
     int      pipe_id;
     int      pipe_end;
 } vfs_fd_t;
 
 void vfs_init(void);
 int  vfs_mount(const char *prefix, vfs_ops_t *ops);
+
+void vfs_task_init(int slot);
+void vfs_task_exit(int slot);
+void vfs_fork(int parent_slot, int child_slot);
 
 int  vfs_open  (const char *path, int flags);
 int  vfs_close (int fd);
@@ -68,6 +72,7 @@ int  vfs_unlink(const char *path);
 int  vfs_chmod (const char *path, const char *mode);
 int  vfs_getcwd(char *buf, uint32_t sz);
 int  vfs_chdir (const char *path);
+void vfs_resolve(const char *path, char *out);
 
 int  vfs_pipe  (int fds[2]);
 int  vfs_dup2  (int oldfd, int newfd);
@@ -77,15 +82,8 @@ int  vfs_isatty(int fd);
 #define STDOUT_FILENO  1
 #define STDERR_FILENO  2
 
-void vfs_init_stdio(void);
-
 vfs_fd_t *vfs_get_fd(int fd);
 
-/* When set, stdout/stderr (fd 1/2) writes go here character-by-character
-   instead of vga_putchar() - lets a caller (the GUI, mainly) capture a
-   ring-3 process's output somewhere other than VGA text mode, which isn't
-   the visible surface while in graphics mode. Pass 0 to go back to the
-   normal vga_putchar path. */
 typedef void (*vfs_stdout_sink_t)(char c);
 void vfs_set_stdout_sink(vfs_stdout_sink_t sink);
 

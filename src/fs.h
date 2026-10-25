@@ -23,5 +23,6 @@ fs_file_t *fs_find(const char *name);
 int        fs_delete(const char *name);
 void       fs_list(void);
 int        fs_file_count(void);
+int        fs_list_names(char *buf, uint32_t sz);
 
 #endif

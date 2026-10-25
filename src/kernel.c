@@ -1460,7 +1460,6 @@ void kernel_main(uint32_t magic, multiboot_info_t *mbi) {
         serial_printf("[boot] No FAT12 disk found\r\n");
 
     vfs_init();
-    vfs_init_stdio();
     proc_fs_init();
     serial_printf("[boot] VFS ready (/mem /disk /dev /proc)\r\n");
 

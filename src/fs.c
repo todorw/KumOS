@@ -94,3 +94,17 @@ void fs_list(void) {
 }
 
 int fs_file_count(void) { return file_count; }
+
+int fs_list_names(char *buf, uint32_t sz) {
+    uint32_t pos = 0;
+    for (int i = 0; i < FS_MAX_FILES; i++) {
+        if (!files[i].used) continue;
+        uint32_t l = (uint32_t)kstrlen(files[i].name);
+        if (pos + l + 2 >= sz) break;
+        kmemcpy(buf + pos, files[i].name, l);
+        pos += l;
+        buf[pos++] = '\n';
+    }
+    if (sz) buf[pos] = 0;
+    return (int)pos;
+}

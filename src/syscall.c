@@ -306,6 +306,7 @@ static uint32_t sc_fork(uint32_t a, uint32_t b, uint32_t c) {
     child->page_dir_phys = child_dir;
     kstrcpy(child->cwd, parent->cwd);
     signal_fork(parent, child);
+    vfs_fork(sched_slot_of(parent), sched_slot_of(child));
 
     kfree(child->stack);
     child->stack      = child_kstack;

@@ -53,6 +53,7 @@ task_t *sched_get_task(int pid);
 int     sched_task_count(void);
 task_t *sched_task_at(int index);
 int     sched_current_index(void);
+int     sched_slot_of(task_t *t);
 int     sched_waitpid(int pid);
 int     sched_wait(int *exit_code);
 int     sched_waitstatus(int pid, int *exit_code);

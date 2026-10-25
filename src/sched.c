@@ -7,6 +7,7 @@
 #include "paging.h"
 #include "keyboard.h"
 #include "signal.h"
+#include "vfs.h"
 #include <stdint.h>
 
 /* Switch CR3 to whatever address space the about-to-run task expects.
@@ -68,7 +69,9 @@ void sched_init(void) {
     tasks[0].kum_level  = 1;
     tasks[0].stack_size = 0;
     tasks[0].parent_pid = 0;
-    kstrcpy(tasks[0].name, "kshell");
+    kstrcpy(tasks[0].name, "desktop");
+    kstrcpy(tasks[0].cwd, "/disk");
+    vfs_task_init(0);
     task_count = 1;
 
     uint32_t *idle_stack = kmalloc(SCHED_STACK_SIZE);
@@ -80,6 +83,7 @@ void sched_init(void) {
         tasks[1].kum_level  = 1;
         tasks[1].parent_pid = 0;
         kstrcpy(tasks[1].name, "idle");
+        kstrcpy(tasks[1].cwd, "/disk");
         task_setup_stack(&tasks[1], idle_task);
         task_count = 2;
     }
@@ -112,6 +116,8 @@ int sched_spawn(const char *name, void (*entry)(void), int kum_level) {
     tasks[slot].tty        = tasks[current_idx].tty;
     tasks[slot].page_dir_phys = 0;
     signal_reset(&tasks[slot]);
+    kstrcpy(tasks[slot].cwd, tasks[current_idx].cwd);
+    vfs_task_init(slot);
     kstrncpy_safe(tasks[slot].name, name, sizeof(tasks[slot].name));
     task_setup_stack(&tasks[slot], entry);
 
@@ -135,6 +141,7 @@ static void task_finish(int i, int code) {
         kfree(t->stack);
         t->stack = 0;
     }
+    vfs_task_exit(i);
     for (int j = 0; j < task_count; j++)
         if (tasks[j].parent_pid == t->pid && tasks[j].state == TASK_ZOMBIE)
             tasks[j].state = TASK_DEAD;
@@ -297,6 +304,8 @@ task_t *sched_task_at(int index) {
 }
 
 int sched_current_index(void) { return current_idx; }
+
+int sched_slot_of(task_t *t) { return (int)(t - tasks); }
 
 void sched_list(void) {
     vga_set_color(VGA_YELLOW, VGA_BLACK);
