@@ -38,15 +38,20 @@ char *kstrcat(char *dst, const char *src) {
 }
 
 void *kmemset(void *s, int c, size_t n) {
-    unsigned char *p = s;
-    while (n--) *p++ = (unsigned char)c;
+    void *d = s;
+    uint32_t v = (uint8_t)c * 0x01010101u;
+    size_t dw = n >> 2, rest = n & 3;
+    __asm__ volatile ("cld; rep stosl" : "+D"(d), "+c"(dw) : "a"(v) : "memory");
+    __asm__ volatile ("rep stosb" : "+D"(d), "+c"(rest) : "a"(v) : "memory");
     return s;
 }
 
 void *kmemcpy(void *dst, const void *src, size_t n) {
-    unsigned char *d = dst;
-    const unsigned char *s = src;
-    while (n--) *d++ = *s++;
+    void *d = dst;
+    const void *sp = src;
+    size_t dw = n >> 2, rest = n & 3;
+    __asm__ volatile ("cld; rep movsl" : "+D"(d), "+S"(sp), "+c"(dw) :: "memory");
+    __asm__ volatile ("rep movsb" : "+D"(d), "+S"(sp), "+c"(rest) :: "memory");
     return dst;
 }
 
