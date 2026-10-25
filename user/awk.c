@@ -102,7 +102,7 @@ static void eval_action(const char *action) {
 }
 
 int main(void) {
-    char args[256]; int an=read(args,255);
+    char args[256]; int an=args_line(args,256);
     if(an>0){args[an]=0;while(an>0&&(args[an-1]=='\n'||args[an-1]==' '))args[--an]=0;}
     if(!*args){
         puts("Usage: awk [-F<sep>] '<pattern> {action}'");
@@ -150,7 +150,7 @@ int main(void) {
 
     char buf[AWK_LINELEN]; int n;
     static char all[65536]; int total=0;
-    while((n=read(all+total,(uint32_t)(sizeof(all)-total-1)))>0) total+=n;
+    while((n=fread(0,all+total,(uint32_t)(sizeof(all)-total-1)))>0) total+=n;
     all[total]=0;
 
     char *lp=all;

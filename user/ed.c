@@ -67,7 +67,7 @@ static void ed_help(void) {
 int main(void) {
     int argc_buf = 0;
     char args[256];
-    int n = read(args, 255);
+    int n = args_line(args, 256);
     if (n > 0) { args[n]=0; while(n>0&&(args[n-1]=='\n'||args[n-1]==' '))args[--n]=0; }
 
     if (!args[0]) { puts("Usage: ed <filename>"); return 1; }

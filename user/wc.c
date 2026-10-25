@@ -18,7 +18,7 @@ static void count_fd(int fd, const char *name, int show_name,
 }
 
 int main(void) {
-    char args[256]; int n=read(args,255);
+    char args[256]; int n=args_line(args,256);
     if(n>0){args[n]=0;while(n>0&&(args[n-1]=='\n'||args[n-1]==' '))args[--n]=0;}
     char *argv[16]; int argc=0; char *p=args;
     while(*p&&argc<15){while(*p==' ')p++;if(!*p)break;argv[argc++]=p;while(*p&&*p!=' ')p++;if(*p)*p++=0;}

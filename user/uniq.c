@@ -2,7 +2,7 @@
 
 int main(void) {
     static char buf[32768]; int total=0, n;
-    while((n=read(buf+total,(uint32_t)(sizeof(buf)-total-1)))>0) total+=n;
+    while((n=fread(0,buf+total,(uint32_t)(sizeof(buf)-total-1)))>0) total+=n;
     buf[total]=0;
     char prev[512]; prev[0]=0;
     char *p=buf;

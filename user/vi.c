@@ -203,7 +203,7 @@ static void insert_key(char k) {
 }
 
 int main(void) {
-    char args[64]; int n=read(args,63);
+    char args[64]; int n=args_line(args,64);
     if(n>0){args[n]=0;while(n>0&&(args[n-1]=='\n'||args[n-1]==' '))args[--n]=0;}
     strncpy(fname,args,63);
     if(fname[0]) load_file(fname);

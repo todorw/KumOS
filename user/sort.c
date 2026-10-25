@@ -11,12 +11,12 @@ static int cmp_str_r(const void *a, const void *b) {
 }
 
 int main(void) {
-    char args[64]; int an=read(args,63);
+    char args[64]; int an=args_line(args,64);
     if(an>0){args[an]=0;while(an>0&&(args[an-1]=='\n'||args[an-1]==' '))args[--an]=0;}
     int reverse = (!strcmp(args,"-r"));
 
     int total=0, n;
-    while((n=read(buf+total,(uint32_t)(sizeof(buf)-total-1)))>0) total+=n;
+    while((n=fread(0,buf+total,(uint32_t)(sizeof(buf)-total-1)))>0) total+=n;
     buf[total]=0;
 
     int nlines=0; char *p=buf;
