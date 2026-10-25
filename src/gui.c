@@ -2191,8 +2191,9 @@ static void render_mine(winrec_t *w) {
 
 static void mine_handle_click(winrec_t *w, int mx, int my) {
     int cx0 = w->x+4, cy0 = w->y+14;
+    if (mx < cx0 || my < cy0) return;
     int c = (mx-cx0)/MINE_CELL, r = (my-cy0)/MINE_CELL;
-    if (r<0||r>=MINE_ROWS||c<0||c>=MINE_COLS) return;
+    if (r>=MINE_ROWS||c>=MINE_COLS) return;
     mine_reveal(r, c);
 }
 
@@ -2241,8 +2242,9 @@ static void settings_handle_click(winrec_t *w, int mx, int my) {
 
 static void mine_handle_rightclick(winrec_t *w, int mx, int my) {
     int cx0 = w->x+4, cy0 = w->y+14;
+    if (mx < cx0 || my < cy0) return;
     int c = (mx-cx0)/MINE_CELL, r = (my-cy0)/MINE_CELL;
-    if (r<0||r>=MINE_ROWS||c<0||c>=MINE_COLS) return;
+    if (r>=MINE_ROWS||c>=MINE_COLS) return;
     if (mine_over || mine_revealed[r][c]) return;
     mine_flagged[r][c] = !mine_flagged[r][c];
 }
