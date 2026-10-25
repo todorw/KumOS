@@ -85,33 +85,33 @@ void sched_init(void) {
     }
 }
 
+static int find_free_slot(void) {
+    for (int i = 0; i < SCHED_MAX_TASKS; i++)
+        if (i >= task_count || tasks[i].pid == 0 || tasks[i].state == TASK_DEAD) return i;
+    for (int i = 2; i < SCHED_MAX_TASKS; i++)
+        if (tasks[i].state == TASK_ZOMBIE) return i;
+    return -1;
+}
+
 int sched_spawn(const char *name, void (*entry)(void), int kum_level) {
-    if (task_count >= SCHED_MAX_TASKS) return -1;
+    int slot = find_free_slot();
+    if (slot < 0) return -1;
 
     uint32_t *stack = kmalloc(SCHED_STACK_SIZE);
     if (!stack) return -1;
-
-    int slot = -1;
-    for (int i = 0; i < SCHED_MAX_TASKS; i++) {
-        if (tasks[i].state == TASK_DEAD || tasks[i].state == TASK_ZOMBIE
-            || tasks[i].pid == 0) {
-            slot = i; break;
-        }
-    }
-    if (slot < 0) slot = task_count;
-    if (slot >= SCHED_MAX_TASKS) { kfree(stack); return -1; }
 
     tasks[slot].pid        = next_pid++;
     tasks[slot].state      = TASK_READY;
     tasks[slot].stack      = stack;
     tasks[slot].stack_size = SCHED_STACK_SIZE;
     tasks[slot].ticks      = 0;
+    tasks[slot].sleep_until = 0;
     tasks[slot].exit_code  = 0;
     tasks[slot].kum_level  = kum_level;
     tasks[slot].parent_pid = tasks[current_idx].pid;
     tasks[slot].tty        = tasks[current_idx].tty;
     tasks[slot].page_dir_phys = 0;
-    kstrcpy(tasks[slot].name, name);
+    kstrncpy_safe(tasks[slot].name, name, sizeof(tasks[slot].name));
     task_setup_stack(&tasks[slot], entry);
 
     if (slot >= task_count) task_count = slot + 1;
@@ -171,8 +171,8 @@ void sched_exit_code(int code) {
             tasks[current_idx].stack = 0;
         }
     }
-    __asm__ volatile ("sti");
     sched_yield();
+    for (;;) __asm__ volatile ("hlt");
 }
 
 void sched_sleep(uint32_t ms) {
@@ -403,9 +403,7 @@ int sched_wait(int *exit_code) {
     int my_pid = tasks[current_idx].pid;
     while (1) {
         for (int i = 0; i < task_count; i++) {
-            if (tasks[i].parent_pid == my_pid
-                && (tasks[i].state == TASK_ZOMBIE
-                    || tasks[i].state == TASK_DEAD)) {
+            if (tasks[i].parent_pid == my_pid && tasks[i].state == TASK_ZOMBIE) {
                 int code = tasks[i].exit_code;
                 int pid  = tasks[i].pid;
                 tasks[i].state = TASK_DEAD;
