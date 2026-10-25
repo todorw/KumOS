@@ -1048,7 +1048,6 @@ static void wm_open_new_terminal(void) {
         }
     }
     wm_open(WIN_TERMINAL, 40, 20, TERM_W, TERM_H);
-    serial_printf("[boot] GUI started\r\n");
 }
 
 static int term_alive(int tty) {
@@ -2587,6 +2586,7 @@ void gui_run(void) {
     for (int i=0;i<WIN_COUNT;i++) wins[i].active = 0;
     zcount = 0;
     wm_open(WIN_TERMINAL, 40, 20, TERM_W, TERM_H);
+    serial_printf("[boot] GUI started\r\n");
 
     int prev_left = 0, prev_right = 0;
     int dragging = -1, drag_ox = 0, drag_oy = 0;
