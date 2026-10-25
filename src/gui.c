@@ -938,11 +938,11 @@ void gui_draw_taskbar(void) {
     }
     gui_hline(0, 9, GUI_WIDTH, (uint8_t)(C_GRAD_ACCENT+5));
 
-    fill_rounded(1, 1, 32, 8, (uint8_t)(C_GRAD_ACCENT+2));
+    fill_rounded(1, 1, 46, 8, (uint8_t)(C_GRAD_ACCENT+2));
     gui_puts(4, 1, "KumOS", C_WHITE, (uint8_t)(C_GRAD_ACCENT+2));
 
     tb_tab_count = 0;
-    int tx = 37;
+    int tx = 51;
     int top = wm_topmost();
     for (int i=0;i<zcount;i++) {
         int t = zorder[i];
@@ -2833,7 +2833,7 @@ void gui_run(void) {
                 } else if (hit == WIN_SETTINGS) {
                     settings_handle_click(w, mx, my);
                 }
-            } else if (my < 10 && mx < 33) {
+            } else if (my < 10 && mx < 48) {
                 launcher_open = 1;
             } else if (my < 10 && mx >= tb_cascade_x0 && mx < tb_cascade_x1) {
                 wm_cascade();
