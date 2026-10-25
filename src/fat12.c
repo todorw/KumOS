@@ -3,6 +3,8 @@
 #include "ata.h"
 #include "vga.h"
 #include "kstring.h"
+#include "rtc.h"
+#include "irq.h"
 #include <stdint.h>
 
 typedef struct __attribute__((packed)) {
@@ -69,12 +71,14 @@ static uint32_t cluster_to_lba(uint16_t cluster) {
 }
 
 static uint16_t fat_get(uint16_t n) {
+    if (n >= g_total_clusters + 2) return 0xFFF;
     uint32_t idx = n + (n / 2);
     uint16_t val = g_fat[idx] | ((uint16_t)g_fat[idx+1] << 8);
     return (n & 1) ? (val >> 4) : (val & 0x0FFF);
 }
 
 static void fat_set(uint16_t n, uint16_t val) {
+    if (n >= g_total_clusters + 2) return;
     uint32_t idx = n + (n / 2);
     if (n & 1) {
         g_fat[idx]   = (g_fat[idx] & 0x0F) | ((val & 0x0F) << 4);
@@ -141,15 +145,14 @@ int fat12_mount(int drive) {
     g_mounted = 0;
     g_drive   = drive;
 
-    if (ata_read(drive, 0, 1, &g_bpb) < 0) return -1;
+    if (ata_read(drive, 0, 1, g_sector) < 0) return -1;
+    kmemcpy(&g_bpb, g_sector, sizeof(g_bpb));
 
-    if (kstrncmp(g_bpb.fs_type, "FAT12", 5) != 0 &&
-        kstrncmp(g_bpb.fs_type, "FAT   ", 5) != 0) {
-
-        if (g_bpb.bytes_per_sector != 512) return -1;
-        if (g_bpb.fat_count < 1 || g_bpb.fat_count > 2) return -1;
-        if (g_bpb.root_entry_count == 0) return -1;
-    }
+    if (g_bpb.bytes_per_sector != 512) return -1;
+    if (g_bpb.sectors_per_cluster == 0) return -1;
+    if (g_bpb.fat_count < 1 || g_bpb.fat_count > 2) return -1;
+    if (g_bpb.root_entry_count == 0) return -1;
+    if (g_bpb.sectors_per_fat == 0 || (uint32_t)g_bpb.sectors_per_fat * 512 > FAT_BUF_SIZE) return -1;
 
     g_fat_start    = g_bpb.reserved_sectors;
     g_root_start   = g_fat_start + (uint32_t)g_bpb.fat_count * g_bpb.sectors_per_fat;
@@ -158,11 +161,13 @@ int fat12_mount(int drive) {
 
     uint32_t total = g_bpb.total_sectors_16 ? g_bpb.total_sectors_16
                                              : g_bpb.total_sectors_32;
+    if (total <= g_data_start) return -1;
     uint32_t data_sectors = total - g_data_start;
     g_total_clusters = data_sectors / g_bpb.sectors_per_cluster;
+    uint32_t max_clusters = (uint32_t)g_bpb.sectors_per_fat * 512 * 2 / 3 - 2;
+    if (g_total_clusters > max_clusters) g_total_clusters = max_clusters;
+    if (g_total_clusters > 0xFEF - 2) g_total_clusters = 0xFEF - 2;
 
-    uint32_t fat_bytes = (uint32_t)g_bpb.sectors_per_fat * 512;
-    if (fat_bytes > FAT_BUF_SIZE) fat_bytes = FAT_BUF_SIZE;
     for (uint32_t s = 0; s < g_bpb.sectors_per_fat; s++) {
         if (ata_read(drive, g_fat_start + s, 1, g_fat + s*512) < 0) return -1;
     }
@@ -174,7 +179,7 @@ int fat12_mount(int drive) {
 
 int fat12_mounted(void) { return g_mounted; }
 
-int fat12_list(fat12_entry_t *entries, int max) {
+static int fat12_list_u(fat12_entry_t *entries, int max) {
     if (!g_mounted) return -1;
     int count = 0;
     dirent_t de;
@@ -225,7 +230,7 @@ static dirfind_t fat12_find(const char *name) {
     return r;
 }
 
-int fat12_read(const char *name, void *buf, uint32_t bufsz) {
+static int fat12_read_u(const char *name, void *buf, uint32_t bufsz) {
     if (!g_mounted) return -1;
     dirfind_t f = fat12_find(name);
     if (!f.found) return -1;
@@ -251,13 +256,43 @@ int fat12_read(const char *name, void *buf, uint32_t bufsz) {
     return (int)read_bytes;
 }
 
-int fat12_write(const char *name, const void *buf, uint32_t size) {
+static int fat12_delete_u(const char *name);
+
+static uint32_t chain_length(uint16_t cluster) {
+    uint32_t n = 0;
+    while (cluster >= 0x002 && cluster <= 0xFEF && n <= g_total_clusters) {
+        n++;
+        cluster = fat_get(cluster);
+    }
+    return n;
+}
+
+static uint32_t free_clusters(void) {
+    uint32_t n = 0;
+    for (uint16_t i = 2; i < g_total_clusters + 2; i++)
+        if (fat_get(i) == 0x000) n++;
+    return n;
+}
+
+static void fat_timestamp(uint16_t *date, uint16_t *time) {
+    rtc_time_t t = rtc_read();
+    uint32_t year = t.year >= 1980 ? t.year - 1980u : 0;
+    *date = (uint16_t)((year << 9) | ((uint32_t)t.month << 5) | t.day);
+    *time = (uint16_t)(((uint32_t)t.hour << 11) | ((uint32_t)t.minute << 5) | (t.second / 2u));
+}
+
+static int fat12_write_u(const char *name, const void *buf, uint32_t size) {
     if (!g_mounted) return -1;
 
     dirfind_t existing = fat12_find(name);
     if (existing.found && (existing.de.attr & ATTR_READONLY)) return -1;
 
-    fat12_delete(name);
+    uint32_t cluster_bytes = 512u * g_bpb.sectors_per_cluster;
+    uint32_t need = (size + cluster_bytes - 1) / cluster_bytes;
+    uint32_t reclaim = existing.found ? chain_length(existing.de.start_cluster) : 0;
+    if (need > free_clusters() + reclaim) return -1;
+
+    fat12_delete_u(name);
 
     uint16_t first_cluster = 0;
     uint16_t prev_cluster  = 0;
@@ -302,8 +337,8 @@ int fat12_write(const char *name, const void *buf, uint32_t size) {
                 dir->attr          = ATTR_ARCHIVE;
                 dir->start_cluster = first_cluster;
                 dir->file_size     = size;
-                dir->date          = 0x4A21;
-                dir->time          = 0x0000;
+                uint16_t fd, ft; fat_timestamp(&fd, &ft);
+                dir->date = fd; dir->time = ft;
 
                 if (first == DIRENT_END && i + 1 < 512/32)
                     (dir+1)->name[0] = DIRENT_END;
@@ -314,7 +349,7 @@ int fat12_write(const char *name, const void *buf, uint32_t size) {
     return -1;
 }
 
-int fat12_delete(const char *name) {
+static int fat12_delete_u(const char *name) {
     if (!g_mounted) return -1;
     dirfind_t f = fat12_find(name);
     if (!f.found) return -1;
@@ -341,7 +376,7 @@ int fat12_delete(const char *name) {
    at the time), which re-copied the entire file through a fresh cluster
    chain and lost the original data location and timestamps for no
    reason. */
-int fat12_rename(const char *old_name, const char *new_name) {
+static int fat12_rename_u(const char *old_name, const char *new_name) {
     if (!g_mounted) return -1;
     dirfind_t f = fat12_find(old_name);
     if (!f.found) return -1;
@@ -358,7 +393,7 @@ int fat12_rename(const char *old_name, const char *new_name) {
 /* Toggles the real on-disk FAT12 read-only attribute bit (the same one
    DOS/Windows uses) - not a fabricated permission model, this is the one
    piece of genuine per-file access control this filesystem format has. */
-int fat12_set_readonly(const char *name, int ro) {
+static int fat12_set_readonly_u(const char *name, int ro) {
     if (!g_mounted) return -1;
     dirfind_t f = fat12_find(name);
     if (!f.found) return -1;
@@ -370,7 +405,7 @@ int fat12_set_readonly(const char *name, int ro) {
     return ata_write(g_drive, f.sector, 1, g_sector);
 }
 
-int fat12_is_readonly(const char *name) {
+static int fat12_is_readonly_u(const char *name) {
     if (!g_mounted) return -1;
     dirfind_t f = fat12_find(name);
     if (!f.found) return -1;
@@ -432,7 +467,7 @@ int fat12_format(int drive, const char *label) {
     return fat12_mount(drive);
 }
 
-int fat12_space(uint32_t *total_kb, uint32_t *free_kb) {
+static int fat12_space_u(uint32_t *total_kb, uint32_t *free_kb) {
     if (!g_mounted) return -1;
     uint16_t free_cl = 0;
     for (uint16_t i = 2; i < g_total_clusters + 2; i++)
@@ -459,4 +494,60 @@ void fat12_info(void) {
         if (fat_get(i) == 0x000) free_cl++;
     vga_puts("  Free clusters:  "); vga_put_dec(free_cl);
     vga_puts("  ("); vga_put_dec(free_cl * 512 / 1024); vga_puts(" KB free)\n\n");
+}
+
+int fat12_list(fat12_entry_t *entries, int max) {
+    uint32_t f = irq_save();
+    int r = fat12_list_u(entries, max);
+    irq_restore(f);
+    return r;
+}
+
+int fat12_read(const char *name, void *buf, uint32_t bufsz) {
+    uint32_t f = irq_save();
+    int r = fat12_read_u(name, buf, bufsz);
+    irq_restore(f);
+    return r;
+}
+
+int fat12_write(const char *name, const void *buf, uint32_t size) {
+    uint32_t f = irq_save();
+    int r = fat12_write_u(name, buf, size);
+    irq_restore(f);
+    return r;
+}
+
+int fat12_delete(const char *name) {
+    uint32_t f = irq_save();
+    int r = fat12_delete_u(name);
+    irq_restore(f);
+    return r;
+}
+
+int fat12_rename(const char *old_name, const char *new_name) {
+    uint32_t f = irq_save();
+    int r = fat12_rename_u(old_name, new_name);
+    irq_restore(f);
+    return r;
+}
+
+int fat12_set_readonly(const char *name, int ro) {
+    uint32_t f = irq_save();
+    int r = fat12_set_readonly_u(name, ro);
+    irq_restore(f);
+    return r;
+}
+
+int fat12_is_readonly(const char *name) {
+    uint32_t f = irq_save();
+    int r = fat12_is_readonly_u(name);
+    irq_restore(f);
+    return r;
+}
+
+int fat12_space(uint32_t *total_kb, uint32_t *free_kb) {
+    uint32_t f = irq_save();
+    int r = fat12_space_u(total_kb, free_kb);
+    irq_restore(f);
+    return r;
 }
