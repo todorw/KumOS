@@ -35,9 +35,6 @@ static inline int sys_unlink(const char *path) {
 static inline int sys_chmod(const char *path, const char *mode) {
     int r; __asm__ volatile("int $0x80":"=a"(r):"a"(27),"b"(path),"c"(mode):"memory"); return r;
 }
-static inline int sys_isatty(int fd) {
-    int r; __asm__ volatile("int $0x80":"=a"(r):"a"(29),"b"(fd):"memory"); return r;
-}
 static inline int sys_listdir(const char *path, char *buf, uint32_t sz) {
     int r; __asm__ volatile("int $0x80":"=a"(r):"a"(14),"b"(path),"c"(buf),"d"(sz):"memory"); return r;
 }
@@ -274,9 +271,7 @@ static int do_cp(char *argv[], int argc) {
     int src = open(argv[1]);
     if (src < 0) { printf("cp: %s: not found\n", argv[1]); return 1; }
 
-    char dst_path[128] = "/disk/";
-    strcat(dst_path, argv[2]);
-    int dst = _syscall(SYS_OPEN, (int)dst_path, O_WRONLY|O_CREAT|O_TRUNC, 0);
+    int dst = _syscall(SYS_OPEN, (int)argv[2], O_WRONLY|O_CREAT|O_TRUNC, 0);
     if (dst < 0) { close(src); printf("cp: can't create %s\n",argv[2]); return 1; }
     char buf[512]; int n;
     while ((n=fread(src,buf,512))>0) _syscall(SYS_FWRITE,dst,(int)buf,(int)n);
@@ -290,9 +285,7 @@ static int do_mv(char *argv[], int argc) {
     int src = open(argv[1]);
     if (src < 0) { printf("mv: %s: not found\n", argv[1]); return 1; }
 
-    char dst_path[128] = "/disk/";
-    strcat(dst_path, argv[2]);
-    int dst = _syscall(SYS_OPEN, (int)dst_path, O_WRONLY|O_CREAT|O_TRUNC, 0);
+    int dst = _syscall(SYS_OPEN, (int)argv[2], O_WRONLY|O_CREAT|O_TRUNC, 0);
     if (dst < 0) { close(src); printf("mv: can't create %s\n", argv[2]); return 1; }
     char buf[512]; int n;
     while ((n=fread(src,buf,512))>0) _syscall(SYS_FWRITE,dst,(int)buf,(int)n);
@@ -508,8 +501,7 @@ static int do_write(char *argv[], int argc) {
     char content[512]; content[0]=0;
     for (int i=2;i<argc;i++){strcat(content,argv[i]);if(i<argc-1)strcat(content," ");}
     strcat(content,"\n");
-    char path[128]="/disk/"; strcat(path,argv[1]);
-    int fd=_syscall(SYS_OPEN,(int)path,O_WRONLY|O_CREAT|O_TRUNC,0);
+    int fd=_syscall(SYS_OPEN,(int)argv[1],O_WRONLY|O_CREAT|O_TRUNC,0);
     if(fd<0){printf("write: can't create %s\n",argv[1]);return 1;}
     _syscall(SYS_FWRITE,fd,(int)content,(int)strlen(content));
     close(fd);
@@ -531,15 +523,6 @@ static int do_kill(char *argv[], int argc) {
     int r=sys_kill(pid,sig);
     if(r<0){printf("kill: pid %d not found\n",pid);return 1;}
     printf("Signal %d sent to PID %d\n",sig,pid);
-    return 0;
-}
-
-static int do_cat_proc(const char *path) {
-    int fd=_syscall(SYS_OPEN,(int)path,O_RDONLY,0);
-    if(fd<0){printf("cat: %s: not found\n",path);return 1;}
-    char buf[2048]; int n=fread(fd,buf,sizeof(buf)-1);
-    if(n>0){buf[n]=0;fputs(buf);}
-    close(fd);
     return 0;
 }
 
@@ -581,11 +564,8 @@ static int do_help(char *argv[], int argc) {
     fputs("  /proc files:\n");
     fputs("    cat /proc/meminfo  cat /proc/ps\n");
     fputs("    cat /proc/uptime   cat /proc/net\n\n");
-    fputs("  ELF programs (from disk):\n");
-    fputs("    HELLO.ELF         - Hello world\n");
-    fputs("    COUNTER.ELF       - Counter demo\n");
-    fputs("    CAT.ELF           - File reader\n");
-    fputs("    SYSINFO.ELF       - System info\n\n");
+    fputs("  Programs (type the name, args work):\n");
+    fputs("    hello counter sysinfo ed vi top crond http tar awk fortune\n\n");
     fputs("  Pipes:  cmd1 | cmd2 | cmd3 (any number of stages)\n\n");
     fputs("  Job control:  cmd &  or  cmd1 | cmd2 &  runs in the background.\n");
     fputs("    Ctrl+Z stops the foreground job (fg/bg to resume it).\n");
@@ -835,7 +815,7 @@ static int do_exec(char *argv[], int argc) {
         sys_signal(2, 0);
         sys_signal(20, 0);
         char *nargv[16]; int n = 0;
-        nargv[n++] = upper;
+        nargv[n++] = (char *)cmd;
         for (int j = 1; j < argc && n < 15; j++) nargv[n++] = argv[j];
         nargv[n] = 0;
         execve(upper, nargv);
@@ -1155,8 +1135,7 @@ static int run_pipeline(char *line) {
         int out_fd = -1, in_fd = -1;
         int saved_out = -1, saved_in = -1;
         if (out_file) {
-            char path[128] = "/disk/"; strcat(path, out_file);
-            out_fd = _syscall(SYS_OPEN, (int)path, O_WRONLY|O_CREAT|(append?O_APPEND:O_TRUNC), 0);
+            out_fd = _syscall(SYS_OPEN, (int)out_file, O_WRONLY|O_CREAT|(append?O_APPEND:O_TRUNC), 0);
             if (out_fd < 0) { printf("kush: can't open %s\n", out_file); return 1; }
             saved_out = sys_dup2(1, 12);
             sys_dup2(out_fd, 1);
@@ -1267,8 +1246,7 @@ static int run_pipeline(char *line) {
             sys_dup2(pipefd[1], 1);
             close(pipefd[1]);
         } else if (out_file) {
-            char path[128] = "/disk/"; strcat(path, out_file);
-            redir_out_fd = _syscall(SYS_OPEN, (int)path, O_WRONLY|O_CREAT|(append?O_APPEND:O_TRUNC), 0);
+            redir_out_fd = _syscall(SYS_OPEN, (int)out_file, O_WRONLY|O_CREAT|(append?O_APPEND:O_TRUNC), 0);
             if (redir_out_fd < 0) { printf("kush: can't open %s\n", out_file); return 1; }
             saved_stdout = sys_dup2(1, 12);
             sys_dup2(redir_out_fd, 1);
