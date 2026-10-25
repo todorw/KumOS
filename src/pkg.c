@@ -1,5 +1,4 @@
 #include "pkg.h"
-#include "fat12.h"
 #include "kstring.h"
 #include <stdint.h>
 
@@ -70,28 +69,15 @@ const char *pkg_fname_at(int i) { return (i>=0 && i<PKG_COUNT) ? pkgs[i].fname :
 const char *pkg_desc_at(int i)  { return (i>=0 && i<PKG_COUNT) ? pkgs[i].desc  : ""; }
 
 int pkg_is_installed(int i) {
-    if (i<0 || i>=PKG_COUNT) return 0;
-    if (!fat12_mounted()) return 0;
-    fat12_entry_t ents[64];
-    int n = fat12_list(ents, 64);
-    for (int j=0;j<n;j++)
-        if (kstrcmp(ents[j].name, pkgs[i].fname)==0) return 1;
-    return 0;
+    return i >= 0 && i < PKG_COUNT;
 }
 
 int pkg_install(const char *name) {
-    int i = pkg_find(name);
-    if (i < 0) return -1;
-    if (!fat12_mounted()) return -2;
-    uint32_t size = (uint32_t)(pkgs[i].end - pkgs[i].start);
-    return fat12_write(pkgs[i].fname, pkgs[i].start, size);
+    return pkg_find(name) < 0 ? -1 : 0;
 }
 
 int pkg_remove(const char *name) {
-    int i = pkg_find(name);
-    if (i < 0) return -1;
-    if (!fat12_mounted()) return -2;
-    return fat12_delete(pkgs[i].fname);
+    return pkg_find(name) < 0 ? -1 : -3;
 }
 
 int pkg_find_index(const char *name) { return pkg_find(name); }
@@ -101,4 +87,25 @@ int pkg_blob_at(int i, const uint8_t **start, const uint8_t **end) {
     *start = pkgs[i].start;
     *end   = pkgs[i].end;
     return 0;
+}
+
+static int fname_eq(const char *a, const char *b) {
+    for (;; a++, b++) {
+        char ca = *a, cb = *b;
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        if (ca != cb) return 0;
+        if (!ca) return 1;
+    }
+}
+
+int pkg_blob_by_fname(const char *fname, const uint8_t **start, const uint8_t **end) {
+    for (int i = 0; i < PKG_COUNT; i++) {
+        if (fname_eq(pkgs[i].fname, fname)) {
+            *start = pkgs[i].start;
+            *end   = pkgs[i].end;
+            return 0;
+        }
+    }
+    return -1;
 }

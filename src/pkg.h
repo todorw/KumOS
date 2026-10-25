@@ -13,5 +13,6 @@ int pkg_remove(const char *name);
 
 int pkg_find_index(const char *name);
 int pkg_blob_at(int i, const uint8_t **start, const uint8_t **end);
+int pkg_blob_by_fname(const char *fname, const uint8_t **start, const uint8_t **end);
 
 #endif
