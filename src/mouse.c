@@ -50,7 +50,8 @@ static uint8_t mouse_read(void) {
 
 static void mouse_irq(registers_t *r) {
     (void)r;
-    if (!(inb(PS2_STATUS) & 0x01)) return;
+    uint8_t st = inb(PS2_STATUS);
+    if (!(st & 0x01) || !(st & 0x20)) return;
     uint8_t byte = inb(PS2_DATA);
 
     if (pkt_idx == 0 && !(byte & 0x08)) return;
@@ -62,9 +63,6 @@ static void mouse_irq(registers_t *r) {
     uint8_t flags = pkt[0];
     int8_t  rel_x = (int8_t)pkt[1];
     int8_t  rel_y = (int8_t)pkt[2];
-
-    if (flags & 0x10) rel_x |= 0x00;
-    if (flags & 0x20) rel_y |= 0x00;
 
     if ((flags & 0x40) || (flags & 0x80)) return;
 
