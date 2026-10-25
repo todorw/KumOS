@@ -5,7 +5,6 @@
 #include "keyboard.h"
 #include "kstring.h"
 #include "kmalloc.h"
-#include "process.h"
 #include "fs.h"
 #include "gdt.h"
 #include "idt.h"
@@ -57,6 +56,25 @@ uint32_t total_mem_kb = 0;
 
 static inline uint8_t inb(uint16_t port) {
     uint8_t v; __asm__ volatile("inb %1,%0":"=a"(v):"Nd"(port)); return v;
+}
+static inline void outb(uint16_t port, uint8_t v) {
+    __asm__ volatile("outb %0,%1"::"a"(v),"Nd"(port));
+}
+static inline void outw(uint16_t port, uint16_t v) {
+    __asm__ volatile("outw %0,%1"::"a"(v),"Nd"(port));
+}
+
+void machine_reboot(void) {
+    __asm__ volatile ("cli");
+    for (int i = 0; i < 100000 && (inb(0x64) & 0x02); i++) {}
+    outb(0x64, 0xFE);
+    __asm__ volatile ("lidt 0\n\t int $0x03");
+}
+
+void machine_poweroff(void) {
+    outw(0x604, 0x2000);
+    outw(0xB004, 0x2000);
+    outw(0x4004, 0x3400);
 }
 
 static void kprintf(const char *fmt, ...) {
@@ -937,7 +955,6 @@ static void cmd_help(void) {
     vga_puts("    kum exit         - Drop privileges\n");
     vga_puts("    kum <cmd>        - Run one command elevated\n");
     vga_puts("    kum kill <pid>   - Kill a task\n");
-    vga_puts("    kum spawn <name> - Spawn background task\n");
     vga_puts("    kum sethost <n>  - Change hostname\n");
     vga_set_color(VGA_YELLOW,VGA_BLACK); vga_puts("  Fun:\n");
     vga_set_color(VGA_WHITE,VGA_BLACK);
@@ -952,14 +969,11 @@ static void cmd_kum(const char *args) {
     if(kstrcmp(args,"exit")==0){ kum_active=0;
         vga_set_color(VGA_YELLOW,VGA_BLACK); vga_puts("[kum] Dropped privileges.\n");
         vga_set_color(VGA_WHITE,VGA_BLACK); return; }
-    if(kstartswith(args,"spawn ")){
-        int pid=sched_spawn(args+6,0,1);
-        kprintf("[kum] Background task '%s' spawned  PID=%d\n",args+6,pid); return; }
     if(kstartswith(args,"kill ")){
         const char *p=args+5; int pid=0;
         while(*p>='0'&&*p<='9'){pid=pid*10+(*p-'0');p++;}
-        if(pid<=1){vga_puts("[kum] Cannot kill kernel tasks.\n");return;}
-        proc_kill(pid); kprintf("[kum] Killed PID %d\n",pid); return; }
+        if(signal_send(pid,SIGKILL)<0){vga_puts("[kum] No such user process.\n");return;}
+        kprintf("[kum] Killed PID %d\n",pid); return; }
     if(kstartswith(args,"sethost ")){
         kstrcpy(hostname,args+8);
         kprintf("[kum] Hostname set to '%s'\n",hostname); return; }
@@ -1362,12 +1376,14 @@ static void dispatch(const char *line) {
     else if(kstrcmp(cmd,"kum")==0){ cmd_kum(rest); }
     else if(kstrcmp(cmd,"reboot")==0){
         if(!kum_active){vga_puts("Permission denied. Use 'kum reboot'\n");return;}
-        vga_puts("Rebooting...\n"); timer_sleep(500);
-        __asm__ volatile("lidt 0\n\t int $0x01"); }
+        vga_puts("Rebooting...\n"); timer_sleep(300);
+        machine_reboot(); }
     else if(kstrcmp(cmd,"shutdown")==0||kstrcmp(cmd,"halt")==0){
         if(!kum_active){vga_puts("Permission denied. Use 'kum shutdown'\n");return;}
         vga_set_color(VGA_YELLOW,VGA_BLACK);
-        vga_puts("\nSystem halted. Power off safely.\n");
+        vga_puts("\nPowering off...\n");
+        machine_poweroff();
+        vga_puts("System halted. Power off safely.\n");
         __asm__ volatile("cli; hlt"); }
     else if(kstrcmp(cmd,"exec")==0) {
         if (!*rest) vga_puts("Usage: exec <file.elf>\n");
@@ -1433,7 +1449,6 @@ void kernel_main(uint32_t magic, multiboot_info_t *mbi) {
     keyboard_init();
     serial_printf("[boot] Keyboard driver active (IRQ1)\r\n");
 
-    proc_init();
     fs_init();
     serial_printf("[boot] In-memory FS ready\r\n");
 

@@ -21,7 +21,7 @@ QEMU     = qemu-system-x86_64 $(KVM) -boot order=d -cdrom kumos.iso \
 KERN_OBJS = \
     boot/boot.o boot/gdt_flush.o boot/isr_stubs.o boot/sched_switch.o \
     src/kstring.o src/vga.o src/keyboard.o src/kmalloc.o \
-    src/process.o src/fs.o src/gdt.o src/idt.o \
+    src/fs.o src/gdt.o src/idt.o \
     src/timer.o src/sched.o src/paging.o \
     src/ata.o src/fat12.o src/pipe.o src/vfs.o \
     src/signal.o src/net.o src/procfs.o src/users.o \

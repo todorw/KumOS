@@ -1,6 +1,5 @@
 #include "timer.h"
 #include "idt.h"
-#include "process.h"
 #include "signal.h"
 #include "sched.h"
 #include <stdint.h>
@@ -18,7 +17,6 @@ static inline void outb(uint16_t port, uint8_t val) {
 
 static void timer_callback(registers_t *r) {
     tick_count++;
-    proc_tick();
     sched_tick(r);
     if ((r->cs & 3) == 3) signal_check();
 }
