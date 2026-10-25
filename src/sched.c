@@ -131,7 +131,7 @@ static void task_finish(int i, int code) {
             tasks[j].state = TASK_DEAD;
 
     int has_parent = 0;
-    for (int j = 0; j < task_count; j++) {
+    for (int j = 2; j < task_count; j++) {
         if (tasks[j].pid == t->parent_pid
             && tasks[j].state != TASK_DEAD && tasks[j].state != TASK_ZOMBIE) {
             has_parent = 1; break;
