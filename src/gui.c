@@ -2058,10 +2058,10 @@ static void render_pkg(winrec_t *w) {
         gui_puts(cx, cy+i*PKGWIN_ROW_H, pkgwin_name(i), fg, bg);
     }
 
-    gui_button(w->x+3,   by, 44, 11, "Update", gui_pressed(w->x+3,   by, 44, 11));
-    gui_button(w->x+49,  by, 36, 11, "Instl",  gui_pressed(w->x+49,  by, 36, 11));
-    gui_button(w->x+87,  by, 40, 11, "Rmove",  gui_pressed(w->x+87,  by, 40, 11));
-    gui_button(w->x+129, by, 36, 11, "Run",    gui_pressed(w->x+129, by, 36, 11));
+    gui_button(w->x+3,   by, 52, 11, "Update",  gui_pressed(w->x+3,   by, 52, 11));
+    gui_button(w->x+57,  by, 60, 11, "Install", gui_pressed(w->x+57,  by, 60, 11));
+    gui_button(w->x+119, by, 52, 11, "Remove",  gui_pressed(w->x+119, by, 52, 11));
+    gui_button(w->x+173, by, 36, 11, "Run",     gui_pressed(w->x+173, by, 36, 11));
     gui_puts(w->x+3, by+12, pkg_status, C_YELLOW, C_WIN_BG);
 }
 
@@ -2071,12 +2071,12 @@ static void pkg_handle_click(winrec_t *w, int mx, int my) {
     int by = w->y+w->h-20;
     int maxrows = (by - cy) / PKGWIN_ROW_H;
 
-    if (point_in(mx, my, w->x+3, by, 44, 11)) {
+    if (point_in(mx, my, w->x+3, by, 52, 11)) {
         int n = pkgnet_update();
         kstrcpy(pkg_status, n < 0 ? "update failed" : "index updated");
         return;
     }
-    if (point_in(mx, my, w->x+49, by, 40, 11)) {
+    if (point_in(mx, my, w->x+57, by, 60, 11)) {
         if (pkg_selected >= 0) {
             const char *nm = pkgwin_name(pkg_selected);
             int r = pkg_install(nm);
@@ -2085,14 +2085,14 @@ static void pkg_handle_click(winrec_t *w, int mx, int my) {
         }
         return;
     }
-    if (point_in(mx, my, w->x+87, by, 40, 11)) {
+    if (point_in(mx, my, w->x+119, by, 52, 11)) {
         if (pkg_selected >= 0) {
             int r = pkg_remove(pkgwin_name(pkg_selected));
             kstrcpy(pkg_status, r == 0 ? "removed" : "remove failed");
         }
         return;
     }
-    if (point_in(mx, my, w->x+129, by, 36, 11)) {
+    if (point_in(mx, my, w->x+173, by, 36, 11)) {
         if (pkg_selected < 0) { kstrcpy(pkg_status, "select one first"); return; }
         if (!pkgwin_installed(pkg_selected)) { kstrcpy(pkg_status, "install it first"); return; }
 
