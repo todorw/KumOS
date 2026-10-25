@@ -43,15 +43,16 @@ static void build_version(void) {
 
 static void build_ps(void) {
     kstrcpy(proc_buf,"PID  STATE  NAME\n");
-    for (int i=1; i<=SCHED_MAX_TASKS; i++) {
-        task_t *t = sched_get_task(i);
-        if (!t || t->state==TASK_DEAD) continue;
+    for (int i=0; i<sched_task_count(); i++) {
+        task_t *t = sched_task_at(i);
+        if (!t || t->pid==0 || t->state==TASK_DEAD) continue;
         char n[12];
         uint_to_str((uint32_t)t->pid,n);
         kstrcat(proc_buf, n);
         kstrcat(proc_buf, "    ");
         const char *st=(t->state==TASK_RUNNING?"RUN":t->state==TASK_READY?"RDY":
-                        t->state==TASK_SLEEPING?"SLP":t->state==TASK_ZOMBIE?"ZOM":"???");
+                        t->state==TASK_SLEEPING?"SLP":t->state==TASK_ZOMBIE?"ZOM":
+                        t->state==TASK_STOPPED?"STP":"???");
         kstrcat(proc_buf, st); kstrcat(proc_buf, "  ");
         kstrcat(proc_buf, t->name); kstrcat(proc_buf, "\n");
     }
@@ -67,7 +68,8 @@ static void build_net(void) {
         kstrcat(proc_buf,tmp);
         if(i<5) kstrcat(proc_buf,":");
     }
-    kstrcat(proc_buf,"\nip:  10.0.2.15\n");
+    char ip[16]; net_ip_to_str(net_get_ip(), ip);
+    kstrcat(proc_buf,"\nip:  "); kstrcat(proc_buf, ip); kstrcat(proc_buf, "\n");
 }
 
 static void build_date(void) {
