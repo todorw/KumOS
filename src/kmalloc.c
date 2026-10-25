@@ -17,6 +17,32 @@ static uint32_t heap_start = 0;
 static uint32_t heap_end   = 0;
 static uint32_t heap_cap   = 0;
 
+static inline uint32_t irq_save(void) {
+    uint32_t f;
+    __asm__ volatile ("pushfl; pop %0; cli" : "=r"(f) :: "memory");
+    return f;
+}
+static inline void irq_restore(uint32_t f) {
+    __asm__ volatile ("push %0; popfl" :: "r"(f) : "memory");
+}
+
+static inline block_t *block_after(block_t *b) {
+    return (block_t *)((uint8_t *)b + sizeof(block_t) + b->size);
+}
+
+static void list_remove(block_t *b) {
+    if (b->prev) b->prev->next = b->next; else free_list = b->next;
+    if (b->next) b->next->prev = b->prev;
+    b->prev = b->next = 0;
+}
+
+static void list_push(block_t *b) {
+    b->prev = 0;
+    b->next = free_list;
+    if (free_list) free_list->prev = b;
+    free_list = b;
+}
+
 void kmalloc_init(uint32_t start, uint32_t size) {
     heap_start = start;
     heap_end   = start;
@@ -24,89 +50,87 @@ void kmalloc_init(uint32_t start, uint32_t size) {
     free_list  = 0;
 }
 
-static block_t *extend_heap(uint32_t need) {
-    uint32_t total = sizeof(block_t) + need;
-    if (heap_end + total > heap_cap) return 0;
-    block_t *b = (block_t *)heap_end;
-    b->magic = MAGIC_FREE;
-    b->size  = need;
-    b->prev  = 0;
-    b->next  = free_list;
-    if (free_list) free_list->prev = b;
-    free_list = b;
-    heap_end += total;
-    return b;
-}
-
-static void coalesce(block_t *b) {
-    block_t *next = (block_t *)((uint8_t *)b + sizeof(block_t) + b->size);
-    if ((uint32_t)next < heap_end && next->magic == MAGIC_FREE) {
-        b->size += sizeof(block_t) + next->size;
-        if (next->prev) next->prev->next = next->next;
-        else free_list = next->next;
-        if (next->next) next->next->prev = next->prev;
-    }
-}
-
 void *kmalloc(size_t size) {
     if (!size) return 0;
     size = (size + 7) & ~7u;
+    uint32_t f = irq_save();
 
-    for (block_t *b = free_list; b; b = b->next) {
-        if (b->size < size) continue;
+    block_t *b = free_list;
+    while (b && b->size < size) b = b->next;
+
+    if (b) {
+        list_remove(b);
         if (b->size >= size + sizeof(block_t) + MIN_SPLIT) {
-            block_t *split = (block_t *)((uint8_t *)b + sizeof(block_t) + size);
-            split->magic = MAGIC_FREE;
-            split->size  = b->size - size - sizeof(block_t);
-            split->prev  = b->prev;
-            split->next  = b->next;
-            if (b->prev) b->prev->next = split; else free_list = split;
-            if (b->next) b->next->prev = split;
+            block_t *rest = (block_t *)((uint8_t *)b + sizeof(block_t) + size);
+            rest->magic = MAGIC_FREE;
+            rest->size  = b->size - size - sizeof(block_t);
+            list_push(rest);
             b->size = size;
-        } else {
-            if (b->prev) b->prev->next = b->next; else free_list = b->next;
-            if (b->next) b->next->prev = b->prev;
         }
-        b->magic = MAGIC_USED;
+    } else {
+        uint32_t total = sizeof(block_t) + size;
+        if (heap_end + total > heap_cap) { irq_restore(f); return 0; }
+        b = (block_t *)heap_end;
+        b->size = size;
         b->prev = b->next = 0;
-        return (void *)((uint8_t *)b + sizeof(block_t));
+        heap_end += total;
     }
 
-    block_t *b = extend_heap(size);
-    if (!b) return 0;
-    if (b->prev) b->prev->next = b->next; else free_list = b->next;
-    if (b->next) b->next->prev = b->prev;
     b->magic = MAGIC_USED;
-    b->prev = b->next = 0;
+    irq_restore(f);
     return (void *)((uint8_t *)b + sizeof(block_t));
 }
 
 void kfree(void *ptr) {
     if (!ptr) return;
     block_t *b = (block_t *)((uint8_t *)ptr - sizeof(block_t));
-    if (b->magic != MAGIC_USED) return;
+    uint32_t f = irq_save();
+    if (b->magic != MAGIC_USED) { irq_restore(f); return; }
     b->magic = MAGIC_FREE;
-    b->prev  = 0;
-    b->next  = free_list;
-    if (free_list) free_list->prev = b;
-    free_list = b;
-    coalesce(b);
+
+    block_t *next = block_after(b);
+    if ((uint32_t)next < heap_end && next->magic == MAGIC_FREE) {
+        list_remove(next);
+        b->size += sizeof(block_t) + next->size;
+    }
+
+    if ((uint32_t)block_after(b) >= heap_end) {
+        heap_end = (uint32_t)b;
+        for (block_t *p = free_list; p; p = p->next) {
+            if (block_after(p) == b) { list_remove(p); heap_end = (uint32_t)p; break; }
+        }
+        irq_restore(f);
+        return;
+    }
+
+    for (block_t *p = free_list; p; p = p->next) {
+        if (block_after(p) == b) {
+            p->size += sizeof(block_t) + b->size;
+            irq_restore(f);
+            return;
+        }
+    }
+    list_push(b);
+    irq_restore(f);
 }
 
 uint32_t kmalloc_used(void) {
+    uint32_t f = irq_save();
     uint32_t used = 0;
-    uint32_t pos = heap_start;
-    while (pos < heap_end) {
+    for (uint32_t pos = heap_start; pos < heap_end; ) {
         block_t *b = (block_t *)pos;
         if (b->magic == MAGIC_USED) used += b->size;
         pos += sizeof(block_t) + b->size;
     }
+    irq_restore(f);
     return used;
 }
 
 uint32_t kmalloc_free(void) {
-    uint32_t fr = 0;
+    uint32_t f = irq_save();
+    uint32_t fr = heap_cap - heap_end;
     for (block_t *b = free_list; b; b = b->next) fr += b->size;
+    irq_restore(f);
     return fr;
 }
 
