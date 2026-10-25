@@ -226,19 +226,28 @@ static int do_grep(char *argv[], int argc) {
     const char *pat = argv[1];
     int fd = 0;
     if (argc > 2) { fd = open(argv[2]); if (fd<0) { printf("grep: %s: not found\n", argv[2]); return 1; } }
-    static char buf[8192]; int total=0; int r;
-    while (total<(int)sizeof(buf)-1 && (r=fread(fd,buf+total,(uint32_t)(sizeof(buf)-total-1)))>0) total+=r;
-    buf[total]=0;
-    if (fd) close(fd);
-    char *p=buf;
-    int found = 0;
-    while (*p) {
-        char *nl=strchr(p,'\n');
-        if (nl) *nl=0;
-        if (strstr(p,pat)) { fputs(p); putchar('\n'); found = 1; }
-        p = nl ? nl+1 : p+strlen(p);
+    static char buf[4096];
+    int have = 0, found = 0, r;
+    while ((r = fread(fd, buf + have, (uint32_t)(sizeof(buf) - 1 - have))) > 0 || have > 0) {
+        if (r > 0) have += r;
+        buf[have] = 0;
+        char *p = buf;
+        char *nl;
+        while ((nl = strchr(p, '\n')) != 0) {
+            *nl = 0;
+            if (strstr(p, pat)) { fputs(p); putchar('\n'); found = 1; }
+            p = nl + 1;
+        }
+        int rest = have - (int)(p - buf);
+        if (r <= 0 || rest == (int)sizeof(buf) - 1) {
+            if (rest > 0 && strstr(p, pat)) { fputs(p); putchar('\n'); found = 1; }
+            rest = 0;
+        }
+        memmove(buf, p, (size_t)rest);
+        have = rest;
+        if (r <= 0) break;
     }
-
+    if (fd) close(fd);
     return found ? 0 : 1;
 }
 
