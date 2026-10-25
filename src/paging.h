@@ -17,8 +17,8 @@
 #define PAGE_COW         (1 << 9)
 
 #define KERN_BASE        0x00100000
-#define VMALLOC_BASE     0x01000000
-#define VMALLOC_END      0x02000000
+#define VMALLOC_BASE     0x10000000
+#define VMALLOC_END      0x11000000
 #define USER_BASE        0x40000000
 
 /* Every process's ring-3 stack lives at the same fixed location, growing

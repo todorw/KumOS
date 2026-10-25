@@ -140,6 +140,10 @@ static uint32_t kern_tables[MAX_PREINIT_TABLES][PAGE_ENTRIES]
                             __attribute__((aligned(PAGE_SIZE)));
 static int num_kern_tables = 4;
 
+#define VMALLOC_TABLES ((VMALLOC_END - VMALLOC_BASE) / (PAGE_SIZE * PAGE_ENTRIES))
+static uint32_t vmalloc_tables[VMALLOC_TABLES][PAGE_ENTRIES]
+                              __attribute__((aligned(PAGE_SIZE)));
+
 static inline void load_cr3(uint32_t dir) {
     __asm__ volatile ("mov %0, %%cr3" :: "r"(dir) : "memory");
 }
@@ -311,6 +315,11 @@ void paging_init(uint32_t mem_kb) {
         page_dir[t] = (uint32_t)kern_tables[t] | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
     }
 
+    for (int t = 0; t < VMALLOC_TABLES; t++) {
+        kmemset(vmalloc_tables[t], 0, PAGE_SIZE);
+        page_dir[PAGE_DIR_IDX(VMALLOC_BASE) + t] = (uint32_t)vmalloc_tables[t] | PAGE_PRESENT | PAGE_WRITE;
+    }
+
     load_cr3((uint32_t)page_dir);
     enable_paging();
 }
@@ -328,11 +337,23 @@ static int       vnum_regions = 0;
 static uint32_t  vmalloc_ptr  = VMALLOC_BASE;
 
 void *vmalloc(uint32_t size) {
-    if (!size || vnum_regions >= VMALLOC_MAX_REGIONS) return 0;
+    if (!size) return 0;
     size = PAGE_ALIGN(size);
-    if (vmalloc_ptr + size >= VMALLOC_END) return 0;
 
-    uint32_t virt = vmalloc_ptr;
+    int slot = -1;
+    uint32_t virt = 0;
+    for (int i = 0; i < vnum_regions; i++) {
+        if (!vregions[i].active && vregions[i].size >= size) {
+            slot = i; virt = vregions[i].virt_start; size = vregions[i].size; break;
+        }
+    }
+    if (slot < 0) {
+        if (vnum_regions >= VMALLOC_MAX_REGIONS) return 0;
+        if (vmalloc_ptr + size > VMALLOC_END) return 0;
+        slot = vnum_regions;
+        virt = vmalloc_ptr;
+    }
+
     for (uint32_t off = 0; off < size; off += PAGE_SIZE) {
         uint32_t phys = pmm_alloc();
         if (!phys) {
@@ -345,11 +366,10 @@ void *vmalloc(uint32_t size) {
         kmemset((void *)(virt + off), 0, PAGE_SIZE);
     }
 
-    vregions[vnum_regions].virt_start = virt;
-    vregions[vnum_regions].size       = size;
-    vregions[vnum_regions].active     = 1;
-    vnum_regions++;
-    vmalloc_ptr += size;
+    vregions[slot].virt_start = virt;
+    vregions[slot].size       = size;
+    vregions[slot].active     = 1;
+    if (slot == vnum_regions) { vnum_regions++; vmalloc_ptr += size; }
     return (void *)virt;
 }
 
