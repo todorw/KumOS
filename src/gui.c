@@ -1177,8 +1177,8 @@ static void render_files(winrec_t *w) {
            delete from this same app), so a file created elsewhere (the
            terminal, another app) while Files stayed open never showed up
            until the window was closed and reopened. */
-        gui_button(w->x+w->w-40, w->y+w->h-10, 38, 9, "Refr",
-                   gui_pressed(w->x+w->w-40, w->y+w->h-10, 38, 9));
+        gui_button(w->x+w->w-64, w->y+w->h-10, 62, 9, "Refresh",
+                   gui_pressed(w->x+w->w-64, w->y+w->h-10, 62, 9));
     } else {
         if (files_renaming) {
             gui_textfield_draw(cx, cy, 100, 12, files_renamebuf, 1);
@@ -1206,7 +1206,7 @@ static void files_handle_click(winrec_t *w, int mx, int my) {
     int cy = w->y+13;
 
     if (!files_preview) {
-        if (point_in(mx, my, w->x+w->w-40, w->y+w->h-10, 38, 9)) { files_refresh(); return; }
+        if (point_in(mx, my, w->x+w->w-64, w->y+w->h-10, 62, 9)) { files_refresh(); return; }
         if (files_count <= 0) return;
         int maxrows = (w->h - 13 - 10) / FILES_ROW_H;
         for (int i=0;i<files_count && i<maxrows;i++) {
@@ -2221,7 +2221,7 @@ static void render_settings(winrec_t *w) {
                  (i == gui_theme) ? C_YELLOW : C_LIGHT_GREY, C_WIN_BG);
     }
 
-    gui_puts(w->x+10, w->y+w->h-24, "Click a swatch to apply and save.",
+    gui_puts(w->x+10, w->y+w->h-24, "Click a swatch to apply it.",
              C_DARK_GREY, C_WIN_BG);
 }
 
