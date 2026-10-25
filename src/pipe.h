@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-#define PIPE_BUF_SIZE   4096
-#define PIPE_MAX        16
+#define PIPE_BUF_SIZE   16384
+#define PIPE_MAX        12
 
 typedef struct {
     uint8_t  buf[PIPE_BUF_SIZE];
@@ -18,8 +18,6 @@ void  pipe_init(void);
 int   pipe_create(void);
 void  pipe_close_read(int id);
 void  pipe_close_write(int id);
-void  pipe_dup_read(int id);
-void  pipe_dup_write(int id);
 int   pipe_write(int id, const void *buf, uint32_t len);
 int   pipe_read (int id, void *buf, uint32_t len);
 int   pipe_has_data(int id);

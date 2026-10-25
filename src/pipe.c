@@ -44,16 +44,6 @@ void pipe_close_write(int id) {
         pipes[id].used = 0;
 }
 
-void pipe_dup_read(int id) {
-    if (id < 0 || id >= PIPE_MAX || !pipes[id].used) return;
-    pipes[id].readers++;
-}
-
-void pipe_dup_write(int id) {
-    if (id < 0 || id >= PIPE_MAX || !pipes[id].used) return;
-    pipes[id].writers++;
-}
-
 int pipe_has_data(int id) {
     if (id < 0 || id >= PIPE_MAX || !pipes[id].used) return 0;
     return pipes[id].head != pipes[id].tail;
