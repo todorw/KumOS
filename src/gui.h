@@ -89,7 +89,6 @@ void gui_draw_desktop(void);
 void gui_draw_taskbar(void);
 
 void gui_run(void);
-void gui_set_terminal_pid(int tty, int pid);
 void gui_emergency_text(void);
 int  gui_ring3_input_focused(void);
 

@@ -1048,10 +1048,7 @@ static void wm_open_new_terminal(void) {
         }
     }
     wm_open(WIN_TERMINAL, 40, 20, TERM_W, TERM_H);
-}
-
-void gui_set_terminal_pid(int tty, int pid) {
-    if (tty >= 0 && tty < VGA_TTYS) term_pid[tty] = pid;
+    serial_printf("[boot] GUI started\r\n");
 }
 
 static int term_alive(int tty) {

@@ -1507,9 +1507,6 @@ void kernel_main(uint32_t magic, multiboot_info_t *mbi) {
     serial_printf("[boot] Enabling interrupts...\r\n");
     __asm__ volatile ("sti");
 
-    const char *kush_argv[1] = { "kush" };
-    gui_set_terminal_pid(0, elf_run("KUSH.ELF", 1, kush_argv, 0));
-    serial_printf("[boot] GUI started\r\n");
     gui_run();
 
     vga_clear();
