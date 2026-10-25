@@ -116,7 +116,7 @@ static inline int strncmp(const char *a, const char *b, size_t n) {
     return (unsigned char)*a - (unsigned char)*b;
 }
 static inline char *strcpy(char *d, const char *s) {
-    char *r = d; while ((*d++ = *s++)); return r;
+    char *r = d; while ((*d++ = *s++)) {} return r;
 }
 static inline char *strncpy(char *d, const char *s, size_t n) {
     char *r = d;
@@ -125,7 +125,7 @@ static inline char *strncpy(char *d, const char *s, size_t n) {
     return r;
 }
 static inline char *strcat(char *d, const char *s) {
-    char *r = d; while (*d) d++; while ((*d++ = *s++)); return r;
+    char *r = d; while (*d) d++; while ((*d++ = *s++)) {} return r;
 }
 static inline char *strchr(const char *s, int c) {
     while (*s) { if (*s == (char)c) return (char *)s; s++; }
