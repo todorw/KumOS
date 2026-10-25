@@ -38,7 +38,7 @@ static void build_uptime(void) {
 }
 
 static void build_version(void) {
-    kstrcpy(proc_buf, "KumOS 1.8 x86\n");
+    kstrcpy(proc_buf, "KumOS " KUMOS_VERSION " i686\n");
 }
 
 static void build_ps(void) {

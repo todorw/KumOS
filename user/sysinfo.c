@@ -3,7 +3,7 @@
 int main(void) {
     printf("\n");
     printf("  ========== KumOS System Info ==========\n\n");
-    printf("  OS:      KumOS v1.5\n");
+    printf("  OS:      KumOS v%s\n", KUMOS_VERSION);
     printf("  Arch:    x86 (i686)\n");
     printf("  PID:     %d\n", getpid());
     printf("  Uptime:  %u seconds\n", uptime());

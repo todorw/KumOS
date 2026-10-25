@@ -184,7 +184,7 @@ static void cmd_logo(void) {
     vga_puts("  ##   ##  ##     ## ##     ## ##     ## ##    ## \n");
     vga_puts("  ##    ##  #######  ##     ##  #######   ######  \n");
     vga_set_color(VGA_YELLOW,VGA_BLACK);
-    vga_puts("       Minimal x86 OS v1.1  |  KumLabs 2025\n\n");
+    vga_puts("       Minimal x86 OS  v" KUMOS_VERSION "\n\n");
     vga_set_color(VGA_WHITE,VGA_BLACK);
 }
 
@@ -890,7 +890,7 @@ static void run_and_wait(const char *fname, const char *name) {
 
 static void cmd_help(void) {
     vga_set_color(VGA_CYAN,VGA_BLACK);
-    vga_puts("\n === KumOS Shell v1.1 ===\n\n");
+    vga_puts("\n === KumOS " KUMOS_VERSION " text console ===\n\n");
     vga_set_color(VGA_YELLOW,VGA_BLACK); vga_puts("  General:\n");
     vga_set_color(VGA_WHITE,VGA_BLACK);
     vga_puts("    help, clear, echo, uname, whoami, hostname, uptime, history\n");
@@ -992,7 +992,7 @@ static void dispatch(const char *line) {
     if(kstrcmp(cmd,"help")==0){ cmd_help(); }
     else if(kstrcmp(cmd,"clear")==0){ vga_clear(); }
     else if(kstrcmp(cmd,"logo")==0){ cmd_logo(); }
-    else if(kstrcmp(cmd,"uname")==0){ vga_puts("KumOS 1.4 kumos i686 KumOS/KumLabs\n"); }
+    else if(kstrcmp(cmd,"uname")==0){ vga_puts("KumOS " KUMOS_VERSION " i686\n"); }
     else if(kstrcmp(cmd,"whoami")==0) {
         user_t *u = users_get_current();
         kprintf("%s (uid=%u)\n", u->name, u->uid);
@@ -1420,7 +1420,7 @@ void kernel_main(uint32_t magic, multiboot_info_t *mbi) {
     serial_init(COM1);
     serial_puts(COM1, "\r\n\r\n");
     serial_puts(COM1, "========================================\r\n");
-    serial_puts(COM1, "  KumOS v1.4 - Serial Boot Log (COM1)  \r\n");
+    serial_puts(COM1, "  KumOS " KUMOS_VERSION " - serial boot log\r\n");
     serial_puts(COM1, "========================================\r\n");
 
     if (magic == MULTIBOOT_MAGIC && mbi && (mbi->flags & MULTIBOOT_FLAG_MEM))
