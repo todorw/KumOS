@@ -9,6 +9,8 @@
 #define O_TRUNC    0x08
 #define O_APPEND   0x10
 
+#define KUMOS_VERSION "2.0"
+
 typedef unsigned int   uint32_t;
 typedef unsigned short uint16_t;
 typedef unsigned char  uint8_t;

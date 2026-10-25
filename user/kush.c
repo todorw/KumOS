@@ -47,7 +47,7 @@ typedef struct { uint32_t size; uint8_t type; char name[64]; } stat_t;
 #define CMD_MAX   256
 #define ARG_MAX    32
 #define HIST_MAX   16
-#define KUSH_VER  "1.0"
+#define KUSH_VER  KUMOS_VERSION
 
 static char history[HIST_MAX][CMD_MAX];
 static int  hist_count = 0;
@@ -545,7 +545,7 @@ static int do_cat_proc(const char *path) {
 
 static int do_help(char *argv[], int argc) {
     (void)argv;(void)argc;
-    fputs("\n  kush v" KUSH_VER " — KumOS Shell\n\n");
+    fputs("\n  kush v" KUSH_VER " - KumOS shell\n\n");
     fputs("  Built-ins:\n");
     fputs("    help              - This help\n");
     fputs("    ls [path]         - List files\n");
@@ -1306,7 +1306,7 @@ static void motd(void) {
         "                           ",
     };
     char info[6][40];
-    sprintf(info[0], "OS: KumOS v1.9");
+    sprintf(info[0], "OS: KumOS v%s", KUMOS_VERSION);
     sprintf(info[1], "Kernel: x86 (i686)");
     sprintf(info[2], "Shell: kush v%s", KUSH_VER);
     sprintf(info[3], "Uptime: %us", uptime());

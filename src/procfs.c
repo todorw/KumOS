@@ -8,6 +8,7 @@
 #include "vga.h"
 #include "dmesg.h"
 #include "kstring.h"
+#include "version.h"
 extern uint32_t total_mem_kb;
 #include <stdint.h>
 

@@ -34,6 +34,7 @@
 #include "ext2.h"
 #include "pkg.h"
 #include "pkgnet.h"
+#include "version.h"
 
 #define MULTIBOOT_MAGIC  0x2BADB002
 #define MULTIBOOT_FLAG_MEM (1<<0)
@@ -1414,7 +1415,7 @@ void kernel_main(uint32_t magic, multiboot_info_t *mbi) {
     vga_init();
     vga_font_snapshot();
     dmesg_init();
-    dmesg_log("KumOS v1.9 booting");
+    dmesg_log("KumOS " KUMOS_VERSION " booting");
 
     serial_init(COM1);
     serial_puts(COM1, "\r\n\r\n");
