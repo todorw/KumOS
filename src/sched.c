@@ -111,6 +111,7 @@ int sched_spawn(const char *name, void (*entry)(void), int kum_level) {
     tasks[slot].parent_pid = tasks[current_idx].pid;
     tasks[slot].tty        = tasks[current_idx].tty;
     tasks[slot].page_dir_phys = 0;
+    signal_reset(&tasks[slot]);
     kstrncpy_safe(tasks[slot].name, name, sizeof(tasks[slot].name));
     task_setup_stack(&tasks[slot], entry);
 
@@ -122,57 +123,52 @@ void sched_exit(void) {
     sched_exit_code(0);
 }
 
-void sched_exit_code(int code) {
-    __asm__ volatile ("cli");
-    tasks[current_idx].exit_code = code;
-
-    /* Every fork()'d/execve'd task owns a private page directory
-       (page_dir_phys) cloned by paging_clone_dir() - this was never freed
-       on exit, only the kernel stack was, so every process that forked
-       and exited leaked its entire address space (page directory + every
-       privately-owned page table + page). A few fork() cycles in a row
-       exhausted physical memory and crashed with a real page fault
-       (NOTPRES, CR2 nowhere near anything the failing code touched
-       directly - just pmm_alloc() silently running out and demand-paging
-       leaving the page unmapped). Must switch off this directory before
-       freeing it - it's still the live CR3 at this point. */
-    if (tasks[current_idx].page_dir_phys) {
-        paging_switch(paging_root_dir());
-        paging_free_user(tasks[current_idx].page_dir_phys);
-        tasks[current_idx].page_dir_phys = 0;
+static void task_finish(int i, int code) {
+    task_t *t = &tasks[i];
+    t->exit_code = code;
+    if (t->page_dir_phys) {
+        if (i == current_idx) paging_switch(paging_root_dir());
+        paging_free_user(t->page_dir_phys);
+        t->page_dir_phys = 0;
     }
+    if (t->stack) {
+        kfree(t->stack);
+        t->stack = 0;
+    }
+    for (int j = 0; j < task_count; j++)
+        if (tasks[j].parent_pid == t->pid && tasks[j].state == TASK_ZOMBIE)
+            tasks[j].state = TASK_DEAD;
 
     int has_parent = 0;
-    for (int i = 0; i < task_count; i++) {
-        if (tasks[i].pid == tasks[current_idx].parent_pid
-            && tasks[i].state != TASK_DEAD
-            && tasks[i].state != TASK_ZOMBIE) {
+    for (int j = 0; j < task_count; j++) {
+        if (tasks[j].pid == t->parent_pid
+            && tasks[j].state != TASK_DEAD && tasks[j].state != TASK_ZOMBIE) {
             has_parent = 1; break;
         }
     }
-    if (has_parent) {
-        tasks[current_idx].state = TASK_ZOMBIE;
+    t->state = has_parent ? TASK_ZOMBIE : TASK_DEAD;
+}
 
-        if (tasks[current_idx].stack) {
-            kfree(tasks[current_idx].stack);
-            tasks[current_idx].stack = 0;
-        }
-
-        /* Nothing ever actually sent SIGCHLD before - sched_waitpid() and
-           friends busy-poll task state directly so nothing depended on it,
-           but that also meant a handler installed via signal()/SIGCHLD had
-           no way to ever fire. Real Unix behavior: notify the parent every
-           time a child becomes reapable. */
-        signal_send(tasks[current_idx].parent_pid, SIGCHLD);
-    } else {
-        tasks[current_idx].state = TASK_DEAD;
-        if (tasks[current_idx].stack) {
-            kfree(tasks[current_idx].stack);
-            tasks[current_idx].stack = 0;
-        }
-    }
+void sched_exit_code(int code) {
+    __asm__ volatile ("cli");
+    task_finish(current_idx, code);
     sched_yield();
     for (;;) __asm__ volatile ("hlt");
+}
+
+int sched_kill(int pid, int code) {
+    uint32_t flags;
+    __asm__ volatile ("pushfl; pop %0; cli" : "=r"(flags) :: "memory");
+    int r = -1;
+    for (int i = 2; i < task_count; i++) {
+        if (tasks[i].pid != pid || tasks[i].state == TASK_DEAD || tasks[i].state == TASK_ZOMBIE) continue;
+        if (i == current_idx) sched_exit_code(code);
+        task_finish(i, code);
+        r = 0;
+        break;
+    }
+    __asm__ volatile ("push %0; popfl" :: "r"(flags) : "memory");
+    return r;
 }
 
 void sched_sleep(uint32_t ms) {
@@ -349,7 +345,7 @@ int sched_waitpid(int pid) {
         if (!found) return 0;
 
         if (keyboard_check_ctrlc()) signal_send(pid, SIGINT);
-
+        signal_check();
         sched_yield();
     }
 }
@@ -381,7 +377,7 @@ int sched_waitstatus(int pid, int *exit_code) {
            ignorable one (real Unix convention); SIGSTOP stays reserved for
            an unconditional `kill -19` that can't be dodged. */
         if (keyboard_check_ctrlz()) signal_send(pid, SIGTSTP);
-
+        signal_check();
         sched_yield();
     }
 }
@@ -418,6 +414,7 @@ int sched_wait(int *exit_code) {
                 && tasks[i].state != TASK_DEAD)
                 children++;
         if (!children) return -1;
+        signal_check();
         sched_yield();
     }
 }

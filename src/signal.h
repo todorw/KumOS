@@ -27,18 +27,13 @@
 
 typedef void (*sighandler_t)(int);
 
-typedef struct {
-    uint32_t pending;
-    uint32_t blocked;
-    sighandler_t handlers[NSIG];
-} sigset_t;
-
 void signal_init(void);
 int  signal_send(int pid, int sig);
 int  signal_set_handler(int sig, sighandler_t handler);
 void signal_check(void);
 int  signal_pending(void);
 void signal_fork(task_t *parent, task_t *child);
+void signal_reset(task_t *t);
 
 
 #endif

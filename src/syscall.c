@@ -424,7 +424,9 @@ uint32_t syscall_dispatch(syscall_regs_t *regs) {
     g_cur_regs = regs;
     uint32_t num = regs->eax, a = regs->ebx, b = regs->ecx, c = regs->edx;
     if (num >= SYSCALL_MAX || !syscall_table[num]) return (uint32_t)-1;
-    return syscall_table[num](a, b, c);
+    uint32_t ret = syscall_table[num](a, b, c);
+    signal_check();
+    return ret;
 }
 
 void syscall_init(void) {

@@ -19,8 +19,8 @@ static inline void outb(uint16_t port, uint8_t val) {
 static void timer_callback(registers_t *r) {
     tick_count++;
     proc_tick();
-    if (tick_count % 10 == 0) signal_check();
     sched_tick(r);
+    if ((r->cs & 3) == 3) signal_check();
 }
 
 void timer_init(uint32_t hz) {

@@ -44,6 +44,7 @@ void    sched_init(void);
 int     sched_spawn(const char *name, void (*entry)(void), int kum_level);
 void    sched_exit(void);
 void    sched_exit_code(int code);
+int     sched_kill(int pid, int code);
 void    sched_sleep(uint32_t ms);
 void    sched_yield(void);
 void    sched_tick(registers_t *r);

@@ -1,6 +1,7 @@
 #include "pipe.h"
 #include "kstring.h"
 #include "sched.h"
+#include "signal.h"
 #include <stdint.h>
 
 static pipe_t pipes[PIPE_MAX];
@@ -78,6 +79,7 @@ int pipe_write(int id, const void *buf, uint32_t len) {
 
         while (pipe_free(p) == 0) {
             if (p->readers == 0) return (int)written;
+            signal_check();
             sched_yield();
         }
         p->buf[p->head] = src[written++];
@@ -96,7 +98,8 @@ int pipe_read(int id, void *buf, uint32_t len) {
     while (nread < len) {
 
         while (p->head == p->tail) {
-            if (p->writers == 0) return (int)nread;
+            if (p->writers == 0 || nread > 0) return (int)nread;
+            signal_check();
             sched_yield();
         }
         dst[nread++] = p->buf[p->tail];
