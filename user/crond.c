@@ -23,16 +23,17 @@ static void cron_add(uint32_t interval, const char *cmd) {
 }
 
 static void run_cmd(const char *cmd) {
-    /* NOTE: real fork()+exec() here hits the same broken paging_clone_dir()
-       bug documented in kush.c's do_exec() - reverted to a plain exec,
-       which means crond (like kush) gets replaced by the first job it
-       runs and never loops again. A real fix needs page-table-level
-       granularity in paging_clone_dir()/paging_free_user(); see kush.c. */
     char upper[64]; int i=0;
     while(cmd[i]&&i<60){char c=cmd[i];if(c>='a'&&c<='z')c-=32;upper[i++]=c;}
     upper[i]=0;
     if (!strchr(upper,'.')) strcat(upper,".ELF");
-    sys_exec(upper);
+    int pid = sys_fork();
+    if (pid == 0) {
+        char *argv[2] = { (char *)cmd, 0 };
+        execve(upper, argv);
+        exit(127);
+    }
+    if (pid > 0) waitpid(pid);
 }
 
 int main(void) {
