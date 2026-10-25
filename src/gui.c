@@ -270,6 +270,8 @@ static void build_palette(void) {
 }
 
 static uint8_t *backbuf = 0;
+static uint8_t *frontbuf = 0;
+static int      front_valid = 0;
 
 /* The desktop background (gradient + icon column + hint text) never
    changes frame to frame, but gui_draw_desktop() was being called - and
@@ -318,6 +320,8 @@ void gui_init(void) {
     build_palette();
     if (!backbuf) backbuf = (uint8_t*)vmalloc(GUI_WIDTH * GUI_HEIGHT);
     if (!desktop_cache) desktop_cache = (uint8_t*)vmalloc(GUI_WIDTH * GUI_HEIGHT);
+    if (!frontbuf) frontbuf = (uint8_t*)vmalloc(GUI_WIDTH * GUI_HEIGHT);
+    front_valid = 0;
     mouse_set_bounds(GUI_WIDTH - 1, GUI_HEIGHT - 1);
 }
 
@@ -357,24 +361,40 @@ void gui_pixel(int x, int y, uint8_t c) {
         backbuf[y * GUI_WIDTH + x] = c;
 }
 
+static int row_changed(const uint8_t *a, const uint8_t *b) {
+    const uint32_t *pa = (const uint32_t *)a, *pb = (const uint32_t *)b;
+    for (int i = 0; i < GUI_WIDTH / 4; i++) if (pa[i] != pb[i]) return 1;
+    return 0;
+}
+
 static void gui_flip(void) {
     if (!backbuf || !fb_ptr) return;
     for (uint32_t y = 0; y < GUI_HEIGHT; y++) {
+        uint8_t *src = backbuf + y*GUI_WIDTH;
+        if (frontbuf) {
+            uint8_t *seen = frontbuf + y*GUI_WIDTH;
+            if (front_valid && !row_changed(src, seen)) continue;
+            kmemcpy(seen, src, GUI_WIDTH);
+        }
         uint32_t *row = (uint32_t*)(fb_ptr + y*fb_pitch);
-        uint8_t  *src = backbuf + y*GUI_WIDTH;
         for (uint32_t x = 0; x < GUI_WIDTH; x++) row[x] = gui_pal_rgb[src[x]];
     }
+    if (frontbuf) front_valid = 1;
 }
 
 void gui_clear(uint8_t c) {
-    if (!backbuf) return;
-    for (int i = 0; i < GUI_WIDTH * GUI_HEIGHT; i++) backbuf[i] = c;
+    if (backbuf) kmemset(backbuf, c, GUI_WIDTH * GUI_HEIGHT);
 }
 
 void gui_rect_fill(int x, int y, int w, int h, uint8_t c) {
-    for (int row = y; row < y+h; row++)
-        for (int col = x; col < x+w; col++)
-            gui_pixel(col, row, c);
+    if (!backbuf) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > GUI_WIDTH)  w = GUI_WIDTH - x;
+    if (y + h > GUI_HEIGHT) h = GUI_HEIGHT - y;
+    if (w <= 0 || h <= 0) return;
+    for (int row = y; row < y + h; row++)
+        kmemset(backbuf + row * GUI_WIDTH + x, c, (size_t)w);
 }
 
 void gui_rect(int x, int y, int w, int h, uint8_t c) {
@@ -385,10 +405,10 @@ void gui_rect(int x, int y, int w, int h, uint8_t c) {
 }
 
 void gui_hline(int x, int y, int len, uint8_t c) {
-    for (int i=0;i<len;i++) gui_pixel(x+i,y,c);
+    gui_rect_fill(x, y, len, 1, c);
 }
 void gui_vline(int x, int y, int len, uint8_t c) {
-    for (int i=0;i<len;i++) gui_pixel(x,y+i,c);
+    gui_rect_fill(x, y, 1, len, c);
 }
 void gui_line(int x0,int y0,int x1,int y1,uint8_t c){
     int dx=x1-x0,dy=y1-y0,steps;
@@ -407,6 +427,14 @@ void gui_putchar(int x, int y, char c, uint8_t fg, uint8_t bg) {
     int idx = (unsigned char)c - 32;
     if (idx < 0 || idx >= 96) idx = 0;
     const uint8_t *glyph = font8x8[idx];
+    if (backbuf && x >= 0 && y >= 0 && x + 8 <= GUI_WIDTH && y + 8 <= GUI_HEIGHT) {
+        uint8_t *dst = backbuf + y * GUI_WIDTH + x;
+        for (int row = 0; row < 8; row++, dst += GUI_WIDTH) {
+            uint8_t bits = glyph[row];
+            for (int col = 0; col < 8; col++) dst[col] = (bits & (1 << col)) ? fg : bg;
+        }
+        return;
+    }
     for (int row = 0; row < 8; row++) {
         uint8_t bits = glyph[row];
         for (int col = 0; col < 8; col++) {
@@ -1003,6 +1031,7 @@ void gui_draw_desktop(void) {
    only taking effect on the next boot. */
 static void gui_apply_theme(void) {
     build_palette();
+    front_valid = 0;
     gui_draw_desktop();
     kmemcpy(desktop_cache, backbuf, GUI_WIDTH * GUI_HEIGHT);
 }
