@@ -921,7 +921,7 @@ static void cmd_help(void) {
     vga_puts("    kill <pid> [sig]  - Send signal to process\n");
     vga_puts("    proc [file]       - Read /proc/file (meminfo,ps,uptime...)\n");
     vga_puts("    serial   - COM1 status + test message\n");
-    vga_puts("    gui      - Launch graphical desktop (Mode 13h)\n");
+    vga_puts("    gui      - Back to the desktop (1920x1080)\n");
     vga_puts("    hexdump <addr> [len] - memory hex dump\n");
     vga_set_color(VGA_YELLOW,VGA_BLACK); vga_puts("  Disk (FAT12 on ATA):\n");
     vga_set_color(VGA_WHITE,VGA_BLACK);
@@ -1260,10 +1260,9 @@ static void dispatch(const char *line) {
     else if(kstrcmp(cmd,"kush")==0) { run_and_wait("KUSH.ELF", "kush"); }
     else if(kstrcmp(cmd,"gui")==0) {
         vga_set_color(VGA_CYAN,VGA_BLACK);
-        vga_puts("Switching to GUI mode (320x200)...\n");
-        vga_puts("Press ESC inside GUI to return.\n");
+        vga_puts("Starting the desktop...\n");
+        vga_puts("Use the Exit icon to come back here.\n");
         vga_set_color(VGA_WHITE,VGA_BLACK);
-        timer_sleep(500);
         gui_run();
 
         vga_clear();
