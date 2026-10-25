@@ -328,6 +328,14 @@ void gui_init(void) {
     mouse_set_bounds(GUI_WIDTH - 1, GUI_HEIGHT - 1);
 }
 
+void gui_emergency_text(void) {
+    if (!gui_active) return;
+    gui_active = 0;
+    vbe_write(VBE_IDX_ENABLE, VBE_DISABLED);
+    set_mode3h();
+    vga_font_restore();
+}
+
 void gui_exit(void) {
     /* Wipe the VBE linear framebuffer to black before disabling it.
        Diagnosed live: non-blank characters render fine right after this

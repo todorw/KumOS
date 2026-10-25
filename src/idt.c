@@ -1,6 +1,11 @@
 #include "idt.h"
 #include "vga.h"
 #include "kstring.h"
+#include "sched.h"
+#include "serial.h"
+#include "paging.h"
+#include "signal.h"
+#include "gui.h"
 #include <stdint.h>
 
 typedef struct __attribute__((packed)) {
@@ -157,7 +162,7 @@ static void draw_panic(registers_t *r) {
     uint32_t *ebp = (uint32_t *)r->ebp;
     int frame = 0;
     int row = 16;
-    while (ebp && frame < 5 && row < 21) {
+    while (ebp && frame < 5 && row < 21 && paging_is_mapped((uint32_t)ebp) && paging_is_mapped((uint32_t)(ebp + 1))) {
         uint32_t ret = *(ebp + 1);
         if (ret < 0x100000 || ret > 0x800000) break;
         vga_puts_at("#", 5, row, VGA_WHITE, VGA_RED);
@@ -171,7 +176,7 @@ static void draw_panic(registers_t *r) {
     }
 
     vga_puts_at("System halted. Reset to continue.", 23, 22, VGA_WHITE, VGA_RED);
-    vga_puts_at("KumOS v1.1 | KumLabs", 30, 23, VGA_LIGHT_GREY, VGA_RED);
+    vga_puts_at("KumOS kernel panic - details on COM1", 22, 23, VGA_LIGHT_GREY, VGA_RED);
 
     __asm__ volatile ("cli; hlt");
     while(1);
@@ -183,13 +188,36 @@ void exc_register(int n, irq_handler_t handler) {
     if (n >= 0 && n < 32) exc_handlers[n] = handler;
 }
 
-void isr_handler(registers_t *r) {
+static int fault_signal(uint32_t n) {
+    if (n == 0) return SIGFPE;
+    if (n == 6) return SIGILL;
+    return SIGSEGV;
+}
 
+void kernel_fault(registers_t *r) {
+    uint32_t cr2;
+    __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+    const char *name = (r->int_no < 20) ? exception_names[r->int_no] : "Unknown Exception";
+    task_t *t = sched_current();
+    if ((r->cs & 3) == 3) {
+        serial_printf("[fault] pid %d (%s): %s at eip=%x cr2=%x err=%x, killed\r\n",
+                      t->pid, t->name, name, r->eip, cr2, r->err_code);
+        sched_exit_code(128 + fault_signal(r->int_no));
+    }
+    exc_register(14, 0);
+    serial_printf("[panic] %s eip=%x cr2=%x err=%x pid=%d (%s)\r\n",
+                  name, r->eip, cr2, r->err_code, t->pid, t->name);
+    paging_switch(paging_root_dir());
+    gui_emergency_text();
+    draw_panic(r);
+}
+
+void isr_handler(registers_t *r) {
     if (r->int_no < 32 && exc_handlers[r->int_no]) {
         exc_handlers[r->int_no](r);
         return;
     }
-    draw_panic(r);
+    kernel_fault(r);
 }
 
 void irq_handler(registers_t *r) {

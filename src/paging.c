@@ -414,9 +414,6 @@ static void page_fault_handler(registers_t *r) {
     int present  = r->err_code & 0x1;
     int write    = r->err_code & 0x2;
 
-    serial_printf("[fault] page fault: pid=%u cr2=%x err=%x eip=%x esp=%x\r\n",
-                  sched_current()->pid, fault_addr, r->err_code, r->eip, r->esp);
-
     if (present && write) {
         uint32_t page = fault_addr & ~0xFFF;
         uint32_t *pte = pte_ptr(page, 0);
@@ -445,26 +442,7 @@ static void page_fault_handler(registers_t *r) {
         }
     }
 
-    uint32_t cr3_now; __asm__ volatile("mov %%cr3,%0":"=r"(cr3_now));
-
-    vga_fill_rect(0,0,80,2,' ',VGA_WHITE,VGA_RED);
-    vga_puts_at("PAGE FAULT  CR2=", 0, 0, VGA_YELLOW, VGA_RED);
-    char buf[12]; kitoa(fault_addr, buf, 16);
-    vga_puts_at(buf, 17, 0, VGA_WHITE, VGA_RED);
-    vga_puts_at(write ? " WRITE" : " READ", 28, 0, VGA_WHITE, VGA_RED);
-    vga_puts_at(present ? "PRESENT" : "NOTPRES", 36, 0, VGA_WHITE, VGA_RED);
-    vga_puts_at((r->err_code & 4) ? "USER" : "SUPER", 45, 0, VGA_WHITE, VGA_RED);
-    vga_puts_at("CR3=", 0, 1, VGA_YELLOW, VGA_RED);
-    char buf2[12]; kitoa(cr3_now, buf2, 16);
-    vga_puts_at(buf2, 4, 1, VGA_WHITE, VGA_RED);
-    vga_puts_at("root=", 20, 1, VGA_YELLOW, VGA_RED);
-    char buf3[12]; kitoa(paging_root_dir(), buf3, 16);
-    vga_puts_at(buf3, 25, 1, VGA_WHITE, VGA_RED);
-
-    exc_register(14, 0);
-
-    __asm__ volatile ("cli; hlt");
-    while(1);
+    kernel_fault(r);
 }
 
 void demand_paging_init(void) {

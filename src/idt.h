@@ -18,5 +18,6 @@ void irq_register(int irq, irq_handler_t handler);
 void irq_unregister(int irq);
 
 void exc_register(int n, irq_handler_t handler);
+void kernel_fault(registers_t *r);
 
 #endif
