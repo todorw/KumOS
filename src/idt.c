@@ -44,7 +44,6 @@ static inline void io_wait(void) { outb(0x80, 0); }
 #define PIC_EOI   0x20
 
 static void pic_remap(void) {
-
     outb(PIC1_CMD,  0x11); io_wait();
     outb(PIC2_CMD,  0x11); io_wait();
     outb(PIC1_DATA, 0x20); io_wait();

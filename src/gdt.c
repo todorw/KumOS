@@ -56,7 +56,6 @@ extern void gdt_flush(uint32_t gdt_ptr);
 extern void tss_flush(void);
 
 void gdt_init(void) {
-
     gdt_set(0, 0, 0, 0, 0);
 
     gdt_set(1, 0, 0xFFFFFFFF, 0x9A, 0xCF);

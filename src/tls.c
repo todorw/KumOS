@@ -7,7 +7,7 @@
 #include "x509.h"
 #include <stdint.h>
 
-#define TLS_CIPHER_SUITE 0x002F   /* TLS_RSA_WITH_AES_128_CBC_SHA */
+#define TLS_CIPHER_SUITE 0x002F
 
 #if defined(TLS_DEBUG_HOST)
 #include <stdio.h>
@@ -19,15 +19,6 @@
 #define DBG(...)
 #endif
 
-/* ---------------- weak PRNG ----------------
-   No real entropy source in this kernel (no RDRAND use, no interrupt
-   jitter collection) - this is a SHA-256 hash-chain seeded from timer
-   ticks + RTC. Good enough to not be trivially predictable from outside
-   and to make the handshake actually work, but it is NOT a cryptographic
-   random source. The pre-master secret's real-world secrecy depends on
-   this, so be honest with anyone reading this: this TLS client is "real
-   encryption, no real key security guarantees, no certificate
-   authentication" - functional, not hardened. */
 static uint8_t  prng_pool[32];
 static int      prng_ready = 0;
 static uint32_t prng_counter = 0;
@@ -56,7 +47,6 @@ static void tls_random_bytes(uint8_t *out, uint32_t len) {
     }
 }
 
-/* ---------------- TLS 1.2 PRF (RFC 5246 5), always SHA-256 based ---------------- */
 static void tls_prf(const uint8_t *secret, uint32_t secret_len,
                      const char *label, const uint8_t *seed, uint32_t seed_len,
                      uint8_t *out, uint32_t out_len) {
@@ -87,7 +77,6 @@ static void tls_prf(const uint8_t *secret, uint32_t secret_len,
     }
 }
 
-/* ---------------- buffered raw byte reader over the TCP socket ---------------- */
 static int tls_io_read(tls_conn_t *c, uint8_t *out, uint32_t len) {
     while (c->io_len < len) {
         if (c->io_start > 0) {
@@ -109,10 +98,7 @@ static int tls_io_read(tls_conn_t *c, uint8_t *out, uint32_t len) {
             c->iobuf[c->io_len+0], c->iobuf[c->io_len+1], c->iobuf[c->io_len+2], c->iobuf[c->io_len+3],
             c->iobuf[c->io_len+4], c->iobuf[c->io_len+5], c->iobuf[c->io_len+6], c->iobuf[c->io_len+7]);
         c->io_len += (uint32_t)n;
-        /* draining the recv ring may have reopened the TCP window - push a
-           fresh ACK so the sender learns right away instead of stalling
-           until more data happens to arrive (see pkgnet.c for the same
-           fix, found the same way) */
+
         tcp_send(c->sock, 0, 0);
     }
     kmemcpy(out, c->iobuf + c->io_start, len);
@@ -121,7 +107,6 @@ static int tls_io_read(tls_conn_t *c, uint8_t *out, uint32_t len) {
     return 0;
 }
 
-/* ---------------- record layer ---------------- */
 static int tls_send_record(tls_conn_t *c, uint8_t content_type, const uint8_t *data, uint32_t len) {
     uint8_t hdr[5] = { content_type, 0x03, 0x03, (uint8_t)(len>>8), (uint8_t)len };
     if (tcp_send(c->sock, hdr, 5) < 0) return -1;
@@ -152,9 +137,6 @@ static int tls_read_record_raw(tls_conn_t *c, uint8_t *content_type, uint8_t *ou
     static uint8_t raw[TLS_RECVBUF_SIZE];
     if (tls_io_read(c, raw, rec_len) != 0) { DBG("[tls] io_read body failed (rec_len=%u)\n", rec_len); return -1; }
 
-    /* ChangeCipherSpec is never itself encrypted - it's the signal that
-       encryption starts for whatever comes *after* it - so it must always
-       be read as plaintext regardless of current cipher state. */
     if (!c->read_encrypted || *content_type == 20) {
         if (rec_len > max_len) return -1;
         kmemcpy(out, raw, rec_len);
@@ -234,9 +216,6 @@ static int tls_send_encrypted(tls_conn_t *c, uint8_t content_type, const uint8_t
     return 0;
 }
 
-/* pulls one handshake message out of the (possibly multi-message) current
-   TLS record, transparently reading a fresh record when exhausted. does
-   not support a single handshake message spanning more than one record. */
 typedef struct { uint8_t buf[16384]; uint32_t len, pos; } hs_reader_t;
 
 static int hs_reader_read_msg(tls_conn_t *c, hs_reader_t *r, uint8_t *msg_type,
@@ -340,7 +319,6 @@ int tls_connect(tls_conn_t *c, uint32_t dst_ip, uint16_t dst_port, const char *s
     DBG("got msg type=%d len=%u (expect 14=ServerHelloDone)\n", msg_type, msg_len);
     if (msg_type != 0x0E) { tcp_close(c->sock); return -1; }
 
-    /* ---- ClientKeyExchange ---- */
     uint8_t pre_master[48];
     pre_master[0] = 0x03; pre_master[1] = 0x03;
     tls_random_bytes(pre_master+2, 46);
@@ -372,7 +350,6 @@ int tls_connect(tls_conn_t *c, uint32_t dst_ip, uint16_t dst_port, const char *s
     if (tls_send_handshake(c, 0x10, cke_body, (uint32_t)(2+mod_len)) != 0) { tcp_close(c->sock); return -1; }
     DBG("sent ClientKeyExchange\n");
 
-    /* ---- derive master secret + key block ---- */
     uint8_t seed_cs[64];
     kmemcpy(seed_cs, client_random, 32);
     kmemcpy(seed_cs+32, server_random, 32);
@@ -392,7 +369,6 @@ int tls_connect(tls_conn_t *c, uint32_t dst_ip, uint16_t dst_port, const char *s
     aes128_init(&c->client_enc, key_block+40);
     aes128_init(&c->server_enc, key_block+56);
 
-    /* ---- ChangeCipherSpec + Finished (client side) ---- */
     uint8_t ccs = 0x01;
     if (tls_send_record(c, 20, &ccs, 1) != 0) { tcp_close(c->sock); return -1; }
     c->established = 1;
@@ -416,7 +392,6 @@ int tls_connect(tls_conn_t *c, uint32_t dst_ip, uint16_t dst_port, const char *s
     if (tls_send_encrypted(c, 22, fin_msg, 16) != 0) { tcp_close(c->sock); return -1; }
     DBG("sent client Finished\n");
 
-    /* ---- read server's ChangeCipherSpec + Finished ---- */
     uint8_t ctype;
     uint32_t n;
     static uint8_t tmp[512];
@@ -464,8 +439,7 @@ int tls_recv(tls_conn_t *c, void *buf, uint32_t maxlen) {
     for (;;) {
         if (tls_read_record_raw(c, &ctype, (uint8_t*)buf, &n, maxlen) != 0) return -1;
         if (ctype == 23) return (int)n;
-        if (ctype == 21) return -1;          /* alert: treat as closed/error */
-        /* ignore stray handshake/ccs records after the handshake completes */
+        if (ctype == 21) return -1;
     }
 }
 

@@ -39,7 +39,6 @@ void speaker_beep(uint32_t freq_hz, uint32_t ms) {
 }
 
 void speaker_jingle(void) {
-    /* C5 E5 G5 C6 - a short major arpeggio, first audio feedback on boot */
     static const uint32_t notes[] = {523, 659, 784, 1047};
     for (int i = 0; i < 4; i++) {
         speaker_on(notes[i]);

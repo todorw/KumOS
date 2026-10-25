@@ -1,4 +1,3 @@
-
 #include "serial.h"
 #include "vga.h"
 #include "kstring.h"
@@ -37,7 +36,6 @@ static inline uint8_t inb(uint16_t p) {
 }
 
 int serial_init(uint16_t port) {
-
     outb(port + UART_IER, 0x00);
 
     outb(port + UART_LCR, LCR_DLAB);
@@ -58,7 +56,6 @@ int serial_init(uint16_t port) {
     }
 
     if (inb(port + UART_DATA) != 0xAE) {
-
         outb(port + UART_MCR, 0x0F);
         return -1;
     }
@@ -70,7 +67,6 @@ int serial_init(uint16_t port) {
 }
 
 void serial_putchar(uint16_t port, char c) {
-
     int timeout = 100000;
     while (!(inb(port + UART_LSR) & LSR_THRE) && --timeout);
 
@@ -138,7 +134,6 @@ void serial_printf(const char *fmt, ...) {
 }
 
 void klog(const char *fmt, ...) {
-
     char buf[512];
     int  pos = 0;
 
@@ -195,7 +190,6 @@ void serial_hexdump(uint16_t port, const void *buf, uint32_t len) {
     char line[80];
 
     for (uint32_t off = 0; off < len; off += 16) {
-
         int i = 0;
         uint32_t a = off;
         line[i++]='0'; line[i++]='x';

@@ -22,17 +22,9 @@
 #define USER_CODE_BASE   0x00400000
 #define USER_CODE_END    0x00800000
 
-/* Every process's ring-3 stack lives at the same fixed location, growing
-   down from here - shared by elf.c (initial spawn), syscall.c (execve's
-   stack remap) and paging.c (clone_dir's bounded PDE255 clone). */
 #define ELF_USER_STACK_TOP   0x40000000
 #define ELF_USER_STACK_SIZE  16384
 
-/* pmm_init() reserves frames below this for the kernel's own image/heap
-   (see its kern_end local) - pmm_free() refuses to free anything below it
-   no matter who asks, and it's the safe lower bound for any code that
-   wants to reclaim/reset a range of PDE1 (see paging_clone_dir()'s comment
-   in paging.c for why that matters). */
 #define KHEAP_BASE           0x00800000
 #define KHEAP_SIZE           0x00200000
 #define KERNEL_RESERVED_END  (KHEAP_BASE + KHEAP_SIZE)

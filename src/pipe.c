@@ -66,7 +66,6 @@ int pipe_write(int id, const void *buf, uint32_t len) {
     uint32_t written = 0;
 
     while (written < len) {
-
         while (pipe_free(p) == 0) {
             if (p->readers == 0) return (int)written;
             signal_check();
@@ -86,7 +85,6 @@ int pipe_read(int id, void *buf, uint32_t len) {
     uint32_t nread = 0;
 
     while (nread < len) {
-
         while (p->head == p->tail) {
             if (p->writers == 0 || nread > 0) return (int)nread;
             signal_check();

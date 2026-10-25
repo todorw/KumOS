@@ -10,15 +10,6 @@
 #include "vfs.h"
 #include <stdint.h>
 
-/* Switch CR3 to whatever address space the about-to-run task expects.
-   Tasks that never forked/execve'd have page_dir_phys==0 and use the
-   shared root directory. Without this, a task with its own cloned
-   directory (fork/execve) that yields would leave CR3 pointing at
-   whichever address space last ran when a *different* task resumes -
-   every virtual address above 1GB (user stack/code) then resolves
-   through the wrong page tables. This was never hit before fork() got
-   fixed to actually work, since nothing previously coexisted via
-   cooperative yield with a genuinely different page directory live. */
 static inline void sched_switch_dir(task_t *next) {
     paging_switch(next->page_dir_phys ? next->page_dir_phys : paging_root_dir());
 }
@@ -32,15 +23,8 @@ static uint32_t tick_accum  = 0;
 extern void switch_context(uint32_t *old_esp, uint32_t new_esp);
 
 static void task_setup_stack(task_t *t, void (*entry)(void)) {
-
     uint32_t *sp = (uint32_t *)((uint8_t *)t->stack + t->stack_size);
 
-    /* switch_context resumes a task via a bare `ret` after popping
-       edi,esi,ebx,ebp,eflags (no iret) — these are ring-0 kernel tasks, no
-       privilege transition needed, so the resume target is just `entry`.
-       eflags=0x202 (IF set) since a freshly-started kernel task should run
-       with interrupts enabled, same as everything else that isn't parked
-       mid-epilogue. */
     *--sp = (uint32_t)entry;
     *--sp = 0x202;
     *--sp = 0;
@@ -190,7 +174,6 @@ static int pick_next(void) {
     int start = (current_idx + 1) % task_count;
     int i = start;
     do {
-
         if (tasks[i].state == TASK_SLEEPING &&
             timer_ticks() >= tasks[i].sleep_until) {
             tasks[i].state = TASK_READY;
@@ -219,25 +202,6 @@ void sched_yield(void) {
     uint32_t *old_esp_ptr = &tasks[prev].esp;
     uint32_t  new_esp     =  tasks[next].esp;
 
-    /* Was a blanket "sti" here before switch_context() - real bug, since
-       current_idx is already updated to `next` above but the stack swap
-       hasn't happened yet. switch_context() now saves/restores EFLAGS
-       itself via pushfd/popfd (boot/sched_switch.asm) instead of a blanket
-       sti, so each task resumes with its own last-saved interrupt state.
-       This fixed a real reentrancy corruption (confirmed via serial
-       tracing: a nested timer tick landing in the old sti-then-switch gap
-       corrupted the register frame of whichever task was mid-switch), but
-       kush's do_exec() still can't safely use real fork()+exec()+wait() -
-       a second, deeper bug remains in the scheduler's handling of a task
-       that yields many times in a loop (sched_waitpid()'s busy-wait) then
-       finally returns to ring 3: the syscall's own saved iret frame reads
-       back correct right up to the last C statement before isr128's
-       fixed pop/iret epilogue (verified with -O0 on the whole call chain,
-       ruling out an optimizer bug), yet the actual iret lands in garbage
-       stack-address-looking values. Root cause not found this round -
-       see feedback-kumos-commit-style / project-kumos-round14 memory.
-       do_exec() is back to the safe self-replacing sys_exec() rather than
-       ship a reproducible crash. */
     switch_context(old_esp_ptr, new_esp);
 }
 
@@ -359,12 +323,6 @@ int sched_waitpid(int pid) {
     }
 }
 
-/* Like sched_waitpid() but also polls for Ctrl+Z (job-control stop) instead
-   of only Ctrl+C, and stops blocking (without reaping) if the child gets
-   stopped rather than just when it exits. Returns 1 if the child exited
-   (exit_code filled in, task reaped to TASK_DEAD - same as sched_waitpid()),
-   2 if the child is now TASK_STOPPED (job control - caller keeps the pid
-   around for a later fg/bg, nothing reaped), 0 if no such pid exists. */
 int sched_waitstatus(int pid, int *exit_code) {
     while (1) {
         int found = 0;
@@ -382,18 +340,13 @@ int sched_waitstatus(int pid, int *exit_code) {
         if (!found) return 0;
 
         if (keyboard_check_ctrlc()) signal_send(pid, SIGINT);
-        /* SIGTSTP, not SIGSTOP - Ctrl+Z's stop has to be the catchable/
-           ignorable one (real Unix convention); SIGSTOP stays reserved for
-           an unconditional `kill -19` that can't be dodged. */
+
         if (keyboard_check_ctrlz()) signal_send(pid, SIGTSTP);
         signal_check();
         sched_yield();
     }
 }
 
-/* Non-blocking job-control status for `jobs`/fg/bg to display without
-   reaping: 0 = running/ready/sleeping, 1 = stopped, 2 = exited (zombie,
-   not yet reaped by wait/waitpid/waitstatus), -1 = no such task. */
 int sched_procstate(int pid) {
     for (int i = 0; i < task_count; i++) {
         if (tasks[i].pid != pid) continue;

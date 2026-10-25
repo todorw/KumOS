@@ -1,4 +1,3 @@
-
 #include "ata.h"
 #include "vga.h"
 #include "kstring.h"

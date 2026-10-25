@@ -1,4 +1,3 @@
-
 #include "fat12.h"
 #include "ata.h"
 #include "vga.h"
@@ -331,7 +330,6 @@ static int fat12_write_u(const char *name, const void *buf, uint32_t size) {
         for (int i = 0; i < 512/32; i++, dir++) {
             uint8_t first = (uint8_t)dir->name[0];
             if (first == DIRENT_FREE || first == DIRENT_END) {
-
                 kmemset(dir, 0, sizeof(dirent_t));
                 kmemcpy(dir->name, fn83, 11);
                 dir->attr          = ATTR_ARCHIVE;
@@ -369,13 +367,6 @@ static int fat12_delete_u(const char *name) {
     return ata_write(g_drive, f.sector, 1, g_sector);
 }
 
-/* A real FAT12 rename: just the directory entry's own 11-byte name field
-   rewritten in place, same sector and cluster chain untouched - O(1)
-   regardless of file size. The Files app used to fake this as
-   read+write-under-new-name+delete-old (the only primitives that existed
-   at the time), which re-copied the entire file through a fresh cluster
-   chain and lost the original data location and timestamps for no
-   reason. */
 static int fat12_rename_u(const char *old_name, const char *new_name) {
     if (!g_mounted) return -1;
     dirfind_t f = fat12_find(old_name);
@@ -390,9 +381,6 @@ static int fat12_rename_u(const char *old_name, const char *new_name) {
     return ata_write(g_drive, f.sector, 1, g_sector);
 }
 
-/* Toggles the real on-disk FAT12 read-only attribute bit (the same one
-   DOS/Windows uses) - not a fabricated permission model, this is the one
-   piece of genuine per-file access control this filesystem format has. */
 static int fat12_set_readonly_u(const char *name, int ro) {
     if (!g_mounted) return -1;
     dirfind_t f = fat12_find(name);
@@ -413,7 +401,6 @@ static int fat12_is_readonly_u(const char *name) {
 }
 
 int fat12_format(int drive, const char *label) {
-
     uint8_t boot[512];
     kmemset(boot, 0, 512);
 

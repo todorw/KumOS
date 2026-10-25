@@ -78,7 +78,6 @@ static void inv_sub_bytes(uint8_t state[16]) {
     for (int i = 0; i < 16; i++) state[i] = inv_sbox[state[i]];
 }
 
-/* state is column-major: state[4*c+r] = byte at column c, row r */
 static void shift_rows(uint8_t s[16]) {
     uint8_t t;
     t=s[1]; s[1]=s[5]; s[5]=s[9]; s[9]=s[13]; s[13]=t;

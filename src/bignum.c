@@ -11,7 +11,6 @@ void bn_from_u32(bignum_t *a, uint32_t v) {
 
 void bn_from_be_bytes(bignum_t *a, const uint8_t *bytes, int len) {
     bn_zero(a);
-    /* bytes[0] is most-significant; walk from the end (LSB) filling limbs */
     int limb = 0, shift = 0;
     for (int i = len - 1; i >= 0; i--) {
         a->d[limb] |= ((uint32_t)bytes[i]) << shift;
@@ -22,7 +21,7 @@ void bn_from_be_bytes(bignum_t *a, const uint8_t *bytes, int len) {
 
 int bn_to_be_bytes(const bignum_t *a, uint8_t *out, int out_len) {
     for (int i = 0; i < out_len; i++) {
-        int byte_index = out_len - 1 - i;   /* 0 = LSB of the whole number */
+        int byte_index = out_len - 1 - i;
         int limb = byte_index / 4;
         int shift = (byte_index % 4) * 8;
         out[i] = (limb < BN_LIMBS) ? (uint8_t)(a->d[limb] >> shift) : 0;
@@ -52,7 +51,6 @@ int bn_byte_len(const bignum_t *a) {
     return 0;
 }
 
-/* out -= b, assumes out >= b. returns nothing (caller guarantees no borrow past top). */
 static void bn_sub_inplace(bignum_t *out, const bignum_t *b) {
     int64_t borrow = 0;
     for (int i = 0; i < BN_LIMBS; i++) {
@@ -84,15 +82,11 @@ void bn_mul(const bignum_t *a, const bignum_t *b, bignum_wide_t *r) {
     }
 }
 
-/* Bit-serial (schoolbook) binary long division: rem = val mod mod.
-   Processes all 2*BN_LIMBS*32 bits of val from MSB to LSB. Correct but
-   not fast - fine, this only runs a few dozen times per handshake. */
 void bn_mod_wide(const bignum_wide_t *val, const bignum_t *mod, bignum_t *rem) {
     bignum_t r;
     bn_zero(&r);
 
     for (int bit = 2*BN_LIMBS*32 - 1; bit >= 0; bit--) {
-        /* shift r left by 1, bringing in the next bit of val at the bottom */
         uint32_t carry = 0;
         for (int i = 0; i < BN_LIMBS; i++) {
             uint32_t newcarry = r.d[i] >> 31;
@@ -118,7 +112,6 @@ void bn_modmul(const bignum_t *a, const bignum_t *b, const bignum_t *mod, bignum
 void bn_modexp_u32(const bignum_t *base, uint32_t exp, const bignum_t *mod, bignum_t *result) {
     bignum_t b;
     {
-        /* reduce base mod n first, in case it's already >= n */
         bignum_wide_t bw;
         for (int i = 0; i < BN_LIMBS; i++) bw.d[i] = base->d[i];
         for (int i = BN_LIMBS; i < 2*BN_LIMBS; i++) bw.d[i] = 0;

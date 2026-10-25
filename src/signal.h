@@ -35,5 +35,4 @@ int  signal_pending(void);
 void signal_fork(task_t *parent, task_t *child);
 void signal_reset(task_t *t);
 
-
 #endif

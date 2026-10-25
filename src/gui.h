@@ -40,19 +40,11 @@
 #define C_ICON_BG      30
 #define C_CURSOR       31
 
-/* 32-63: 8-shade gradient ramps (light->dark), for chrome that used to be
-   flat single colors. Index with base+0..base+7. */
-#define C_GRAD_TITLE   32   /* window titlebar: light blue -> WIN_TITLE */
-#define C_GRAD_TASKBAR 40   /* taskbar bar: charcoal-blue, light -> dark */
-#define C_GRAD_SKY     48   /* unused now - see C_GRAD_SKY2, kept so nothing else's indices shift */
-#define C_GRAD_ACCENT  56   /* highlights/selection: bright cyan -> teal */
+#define C_GRAD_TITLE   32
+#define C_GRAD_TASKBAR 40
+#define C_GRAD_SKY     48
+#define C_GRAD_ACCENT  56
 
-/* 64-255: the desktop wallpaper's real gradient - 192 bands (a 3-stop
-   sky-blue -> mid-blue -> deep-indigo interpolation), replacing both
-   C_GRAD_SKY's old 8 bands (each ~95px tall on a 758px-tall desktop -
-   the visible "chunky/pixelated" banding) and a previously-unused
-   filler grayscale ramp that lived in this same range and nothing ever
-   referenced. Index with base+0..base+191. */
 #define C_GRAD_SKY2       64
 #define C_GRAD_SKY2_BANDS 192
 

@@ -1,4 +1,3 @@
-
 #include "keyboard.h"
 #include "idt.h"
 #include "vga.h"
@@ -203,13 +202,6 @@ char keyboard_getchar(void) {
 
 char keyboard_getchar_blocking(void) {
     for (;;) {
-
-        /* Never touch the shared queue while some other GUI window owns
-           the keyboard - see gui_ring3_input_focused()'s comment. Without
-           this a caller blocked here (kush's real read(), idle at its
-           prompt) keeps winning the race against the GUI's own
-           keyboard_getchar() poll for keystrokes meant for whichever
-           window is actually focused. */
         signal_check();
         if (!gui_ring3_input_focused()) { __asm__ volatile("sti; hlt"); continue; }
 
@@ -217,19 +209,14 @@ char keyboard_getchar_blocking(void) {
         if (c) return c;
 
         __asm__ volatile("sti; hlt");
-
     }
 }
 
-/* Shared kernel-side line history: benefits both the CLI shell's own
-   getline calls and any ring-3 program reading via the read() syscall
-   (e.g. kush), since there's only one physical keyboard/session at a
-   time anyway. */
 #define KBD_HIST_MAX  16
 #define KBD_LINE_MAX  256
 static char kbd_hist[KBD_HIST_MAX][KBD_LINE_MAX];
 static int  kbd_hist_count = 0;
-static int  kbd_hist_pos   = -1;   /* -1 = live (not browsing) line */
+static int  kbd_hist_pos   = -1;
 static char kbd_hist_stash[KBD_LINE_MAX];
 
 static void kbd_hist_add(const char *line) {
@@ -244,10 +231,6 @@ static void kbd_hist_add(const char *line) {
     kbd_hist_pos = -1;
 }
 
-/* First-word tab completion against a fixed vocabulary spanning both the
-   CLI shell's and kush's own builtins - keyboard.c has no visibility into
-   either dispatcher's actual command table, so this is a best-effort,
-   hand-maintained list rather than a fully dynamic one. */
 static const char *kbd_words[] = {
     "help","clear","ls","cat","cd","pwd","echo","date","history","exit",
     "run","exec","kush","pkg","ps","meminfo","vmem","kill","gui","hexdump",
@@ -269,7 +252,7 @@ static int kbd_tab_complete(char *out, int *len, int *cur) {
         int ok = 1;
         for (int i=0;i<wlen;i++) if (w[i]!=out[i]) { ok=0; break; }
         if (ok && (int)kstrlen(w) > wlen) { match = w; nmatch++; }
-        else if (ok && (int)kstrlen(w) == wlen) { nmatch = 0; break; } /* already complete */
+        else if (ok && (int)kstrlen(w) == wlen) { nmatch = 0; break; }
     }
     if (nmatch == 1) {
         int wl = (int)kstrlen(match);
@@ -354,18 +337,14 @@ int keyboard_getline(char *out, int maxlen) {
             if (kbd_tab_complete(out, &len, &cur))
                 kbd_redraw(start_row, start_col, out, len, cur);
         }
-        /* Standard readline-ish shortcuts - process_scancode()/poll_once()
-           already turn Ctrl+letter into the real ASCII control code
-           (Ctrl+A=1 ... Ctrl+Z=26), these just weren't handled here, so
-           they silently no-op'd (all < 32, so the printable-char branch
-           below never took them either). */
-        else if (c == 1)  { cur = 0;   vga_goto(start_row, start_col); }              /* Ctrl+A: start of line */
-        else if (c == 5)  { cur = len; vga_goto(start_row, start_col+len); }          /* Ctrl+E: end of line */
-        else if (c == 21) { len = cur = 0; out[0] = 0;                                /* Ctrl+U: clear whole line */
+
+        else if (c == 1)  { cur = 0;   vga_goto(start_row, start_col); }
+        else if (c == 5)  { cur = len; vga_goto(start_row, start_col+len); }
+        else if (c == 21) { len = cur = 0; out[0] = 0;
             kbd_redraw(start_row, start_col, out, len, cur); }
-        else if (c == 11) { out[cur] = 0; len = cur;                                  /* Ctrl+K: kill to end of line */
+        else if (c == 11) { out[cur] = 0; len = cur;
             kbd_redraw(start_row, start_col, out, len, cur); }
-        else if (c == 23) {                                                           /* Ctrl+W: delete word before cursor */
+        else if (c == 23) {
             int end = cur;
             while (cur > 0 && out[cur-1] == ' ') cur--;
             while (cur > 0 && out[cur-1] != ' ') cur--;

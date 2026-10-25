@@ -12,8 +12,6 @@
 extern uint32_t total_mem_kb;
 #include <stdint.h>
 
-
-
 static char proc_buf[2048];
 
 static void uint_to_str(uint32_t n, char *buf) {
@@ -88,12 +86,7 @@ static int proc_pos = 0;
 
 static int proc_open(const char *path, int flags) {
     (void)flags;
-    /* proc_pos used to be cleared only in proc_close(), never here - an
-       open of a second proc file (or a re-open of the same fd slot)
-       before the previous one is closed left it at wherever the last
-       read stopped, which underflows proc_read's `avail` once the
-       freshly-rebuilt proc_buf is shorter than that stale offset and
-       reads proc_buf out of bounds into the caller's buffer. */
+
     proc_pos = 0;
     if (kstrcmp(path,"meminfo")==0)   { build_meminfo(); return 1; }
     if (kstrcmp(path,"uptime")==0)    { build_uptime();  return 2; }

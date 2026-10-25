@@ -22,7 +22,6 @@ static inline uint8_t inb(uint16_t p) {
 }
 
 static void rtc_wait(void) {
-
     do {
         outb(CMOS_ADDR, RTC_REGA);
     } while (inb(CMOS_DATA) & 0x80);
@@ -38,7 +37,6 @@ static uint8_t bcd_to_bin(uint8_t bcd) {
 }
 
 void rtc_init(void) {
-
 }
 
 rtc_time_t rtc_read(void) {

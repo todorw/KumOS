@@ -1,4 +1,3 @@
-
 #include "gui.h"
 #include "font8x8.h"
 #include "vga.h"
@@ -65,11 +64,6 @@ static void set_mode3h(void) {
     outb(0x3C0, 0x20);
 }
 
-/* Bochs/QEMU "dispi" VBE interface: a handful of I/O-port registers that
-   let you pick a linear-framebuffer resolution/depth directly, no real-mode
-   VBE BIOS calls needed. QEMU's -vga std (and qxl/virtio compat mode)
-   emulate this. The framebuffer's physical base comes off the PCI device's
-   BAR0 - same PCI-config-space dance net.c already does for the rtl8139. */
 #define VBE_IOPORT_INDEX 0x01CE
 #define VBE_IOPORT_DATA   0x01CF
 #define VBE_IDX_ID        0
@@ -107,25 +101,6 @@ static uint32_t find_vbe_fb_phys(void) {
     return 0;
 }
 
-/* True for the entire span between gui_init() and gui_exit() - lets other
-   subsystems (vfs.c's console fallback, see below) tell VBE/LFB mode apart
-   from the legacy text console. Needed because a process with no GUI
-   stdout_sink (anything not launched via the GUI's own Run button - a
-   background daemon like crond started from the pre-GUI kush shell is the
-   real-world case that found this) still falls back to vga_putchar() for
-   fd 1/2, which writes straight to 0xB8000. That's harmless in real text
-   mode, but VBE/LFB reuses the exact same physical VRAM (see the font-plane
-   comment on vga_font_snapshot()) - so those writes land somewhere inside
-   the live, currently-displayed framebuffer instead of a legacy buffer
-   nobody's showing. Found while chasing the long-open "GUI corrupts near
-   the border" report (round 20/26): a real bug, and worth closing on its
-   own merits, but verified with this fix alone in place that it is NOT
-   the report's actual cause - `crond.elf &` then `exit` to the GUI still
-   reproduces the same RGB-static corruption with this path fully gated
-   off. See the paging_clone_dir() comment for the other real bug found
-   and fixed in the same investigation, which *also* didn't turn out to be
-   the cause. Root cause is still open - both fixes are kept regardless,
-   since each is independently a genuine correctness issue. */
 static int gui_active = 0;
 int gui_is_active(void) { return gui_active; }
 
@@ -160,15 +135,8 @@ static int set_vbe_mode(uint16_t width, uint16_t height, uint16_t bpp) {
 
 static uint32_t gui_pal_rgb[256];
 
-/* Persisted across boots via SETTINGS.TXT - see gui_load_settings()/
-   gui_save_settings(). Index into gui_theme_stops[] below. */
 static int gui_theme = 0;
 
-/* Shared Yes/No confirmation modal - Files' delete and System Monitor's
-   kill used to fire straight off a single click with no way back. One
-   pending-action slot is enough (nothing else takes input while it's up:
-   gui_run()'s click dispatch checks this before anything else, same as
-   it already does for ctxmenu_open/launcher_open). */
 typedef enum { CONFIRM_NONE = 0, CONFIRM_DELETE_FILE, CONFIRM_KILL_TASK, CONFIRM_REBOOT, CONFIRM_POWEROFF } confirm_kind_t;
 static confirm_kind_t confirm_pending = CONFIRM_NONE;
 static char           confirm_target_name[64];
@@ -179,11 +147,8 @@ static int term_pid[VGA_TTYS] = { -1, -1, -1 };
 #define GUI_THEME_COUNT 3
 static const char *gui_theme_names[GUI_THEME_COUNT] = { "Sky", "Sunset", "Forest" };
 static const struct { uint8_t r0,g0,b0, r1,g1,b1, r2,g2,b2; } gui_theme_stops[GUI_THEME_COUNT] = {
-    /* Sky (the original default): light blue -> mid blue -> deep indigo */
     { 110,140,210,  55,75,140,  15,18,42 },
-    /* Sunset: warm peach -> coral -> deep plum */
     { 235,170,120,  200,95,90,  50,20,45 },
-    /* Forest: pale mint -> mid green -> deep pine */
     { 170,215,175,  70,140,95,  15,45,30 },
 };
 
@@ -239,13 +204,6 @@ static void build_palette(void) {
                          ((uint32_t)(pal[i].g*255/63) << 8)  |
                           (uint32_t)(pal[i].b*255/63);
 
-    /* Desktop wallpaper: a real 3-stop gradient over 192 bands instead of
-       the old 8 - at 758px of desktop height, 8 bands meant ~95px-tall
-       solid-color stripes, clearly visible as chunky/pixelated banding
-       rather than a smooth sky. 192 bands means ~4px steps, well past
-       what's perceptible as banding. Stop colors come from the current
-       theme (Settings app, gui_theme/gui_theme_stops[] above) instead of
-       being hardcoded, so switching themes just means calling this again. */
     {
         int th = (gui_theme >= 0 && gui_theme < GUI_THEME_COUNT) ? gui_theme : 0;
         int r0=gui_theme_stops[th].r0, g0=gui_theme_stops[th].g0, b0=gui_theme_stops[th].b0;
@@ -274,23 +232,8 @@ static uint8_t *backbuf = 0;
 static uint8_t *frontbuf = 0;
 static int      front_valid = 0;
 
-/* The desktop background (gradient + icon column + hint text) never
-   changes frame to frame, but gui_draw_desktop() was being called - and
-   fully recomputed via ~800 individual gui_pixel-bounds-checked draw
-   calls, rounded-rect math and all - at the top of every single loop
-   iteration regardless. Render it once into this cache and kmemcpy it
-   into backbuf every frame instead; windows/taskbar/cursor still draw on
-   top of that each frame same as before. This was the single biggest
-   real cost in the per-frame render path - a plain memcpy of ~768KB is
-   drastically cheaper than ~800 draw calls each doing their own bounds
-   checks and per-pixel math. */
 static uint8_t *desktop_cache = 0;
 
-/* The only thing the Settings app persists so far is the wallpaper theme
-   - a single digit in an 8.3 FAT12 file is as simple as this can get.
-   Loaded once at gui_init() (before the first build_palette() call, so
-   the chosen theme is what actually renders from the very first frame),
-   saved whenever the Settings app changes it. */
 static void gui_load_settings(void) {
     if (!fat12_mounted()) return;
     char buf[8];
@@ -307,13 +250,6 @@ static void gui_save_settings(void) {
 }
 
 void gui_init(void) {
-    /* Flipped here, before set_vbe_mode() ever touches hardware, not in
-       gui_run() after gui_init() returns - a task preempted onto the CPU
-       (kush now runs concurrently with the GUI from the moment it's
-       spawned, see kernel_main()) in that gap would still see
-       gui_is_active()==0 and have vga_putchar() target real 0xB8000 while
-       VBE/LFB was already live underneath it - exactly the aliased-VRAM
-       corruption class rounds 20-29 closed everywhere else. */
     gui_active = 1;
     if (set_vbe_mode(GUI_WIDTH, GUI_HEIGHT, 32) != 0)
         serial_printf("[gui] no VBE framebuffer found (need qemu -vga std)\r\n");
@@ -335,17 +271,6 @@ void gui_emergency_text(void) {
 }
 
 void gui_exit(void) {
-    /* Wipe the VBE linear framebuffer to black before disabling it.
-       Diagnosed live: non-blank characters render fine right after this
-       transition (a solid full-screen fill of 'A' came back pixel-perfect),
-       but blank/space cells specifically don't - a full-screen vga_clear()
-       shows a leftover "crosshatch" of stale pixels even though the actual
-       character+attribute bytes at 0xB8000 read back byte-correct through
-       the monitor. That points at QEMU's text-mode renderer skipping the
-       background re-fill for space cells and letting whatever's already on
-       the display surface show through - which right after a VBE session
-       is still last frame's GUI desktop. Zeroing the framebuffer while
-       still in VBE mode means that leftover is black instead of garbage. */
     if (fb_ptr) {
         uint32_t total = fb_pitch * GUI_HEIGHT;
         for (uint32_t i = 0; i < total; i += 4) *(uint32_t*)(fb_ptr + i) = 0;
@@ -501,7 +426,6 @@ static void outline_rounded(int x, int y, int w, int h, uint8_t c) {
 }
 
 void gui_window(int x, int y, int w, int h, const char *title) {
-
     fill_rounded(x+3, y+3, w, h, C_SHADOW);
 
     fill_rounded(x, y, w, h, C_WIN_BG);
@@ -527,13 +451,6 @@ static int point_in(int px, int py, int x, int y, int w, int h) {
     return px>=x && px<x+w && py>=y && py<y+h;
 }
 
-/* Set once per frame in gui_run() right before the windows are drawn -
-   every render_*() function can then ask gui_pressed()/gui_hover()
-   whether ITS OWN button is the one currently held down or just sitting
-   under the cursor, instead of every gui_button() call across every
-   window hardcoding "not pressed" (which is what all of them did before
-   this - the pressed/C_BUTTON visual state gui_button() already
-   supported was simply never wired up to anything real). */
 static int cur_mx = -1, cur_my = -1, cur_mdown = 0;
 
 static int gui_pressed(int x, int y, int w, int h) {
@@ -554,7 +471,6 @@ void gui_button(int x, int y, int w, int h, const char *label, int pressed) {
 }
 
 static void icon_glyph(int x, int y, icon_kind_t kind) {
-    /* x,y = top-left of a roughly 20x14 drawing area inside the tile */
     switch (kind) {
     case ICON_TERM:
         gui_rect_fill(x, y, 20, 14, C_BLACK);
@@ -603,9 +519,7 @@ static void icon_glyph(int x, int y, icon_kind_t kind) {
         gui_vline(x+9, y+5, 4, C_YELLOW);
         break;
     case ICON_BROWSER:
-        /* a small globe - rows of shrinking width fake a circle, no
-           circle primitive to draw with, plus a meridian down the
-           middle so it doesn't just read as a plain blob at this size. */
+
         gui_hline(x+4, y+1, 12, C_LIGHT_BLUE);
         gui_hline(x+2, y+3, 16, C_LIGHT_BLUE);
         gui_hline(x+1, y+5, 18, C_LIGHT_BLUE);
@@ -627,8 +541,6 @@ static void icon_glyph(int x, int y, icon_kind_t kind) {
         gui_rect_fill(x+12, y+9, 3, 3, C_BLACK);
         break;
     case ICON_SNAKE: {
-        /* a zigzag of little squares - reads as a snake body at this
-           size better than trying to fake a curve out of rectangles. */
         int sx[6] = {1,4,7,7,10,13}, sy[6] = {6,6,6,3,3,3};
         for (int i=0;i<6;i++) {
             uint8_t c = (i==5) ? C_LIGHT_RED : C_LIGHT_GREEN;
@@ -659,9 +571,7 @@ static void icon_glyph(int x, int y, icon_kind_t kind) {
         gui_pixel(x+10, y+1, C_RED);
         break;
     case ICON_SETTINGS:
-        /* a gear: a solid hub plus 4 stubby teeth around it - no circle
-           primitive to draw with, so the "hub" is just a filled square
-           and the teeth are short rect stubs on each side. */
+
         gui_rect_fill(x+6, y+3, 8, 8, C_LIGHT_GREY);
         gui_rect_fill(x+8, y+5, 4, 4, C_DARK_GREY);
         gui_rect_fill(x+9, y,   2, 3, C_LIGHT_GREY);
@@ -677,7 +587,6 @@ static void icon_glyph(int x, int y, icon_kind_t kind) {
 }
 
 void gui_icon(int x, int y, const char *label, uint8_t icon_color, icon_kind_t kind) {
-
     fill_rounded(x+1, y+1, 30, 22, C_SHADOW);
     fill_rounded(x, y, 30, 22, icon_color);
     outline_rounded(x, y, 30, 22, gui_hover(x, y, 30, 22) ? C_WHITE : C_WIN_BORDER);
@@ -716,13 +625,6 @@ void gui_draw_cursor(int x, int y) {
         }
 }
 
-
-/* Shared click-to-edit text field - the browser URL bar and KumWrite's
-   filename field both hand-rolled this same box+text+blink-cursor draw
-   and the same backspace/printable-append key handling before this
-   existed (see round 19's memory - noted as the natural next toolkit
-   step, never done until now). Enter/escape stay caller-side since what
-   they mean differs per field (navigate vs stop-editing). */
 static void gui_textfield_draw(int x, int y, int w, int h, const char *buf, int editing) {
     gui_rect_fill(x, y, w, h, C_WHITE);
     gui_rect(x, y, w, h, editing ? C_NAVY : C_LIGHT_GREY);
@@ -741,11 +643,6 @@ static void gui_textfield_key(char *buf, int maxlen, char key) {
     }
 }
 
-/* No general-purpose rand() anywhere in this kernel - tls.c has its own
-   SHA256-backed CSPRNG but that's a crypto concern, wrong thing to couple
-   a game's food/tile placement to. A bog-standard LCG seeded off
-   timer_ticks() is plenty for "where does the next thing go" - shared by
-   Snake and 2048. */
 static uint32_t gui_rng_state = 0;
 
 static uint32_t gui_rand(void) {
@@ -754,11 +651,6 @@ static uint32_t gui_rand(void) {
     return gui_rng_state;
 }
 
-/* A one-shot beep that doesn't block the GUI loop, unlike speaker_beep()
-   which sleeps for its whole duration - Piano proved speaker_on/off can
-   be driven non-blockingly (there, tied to mouse press/release), this
-   just ties the "off" half to a future tick instead of an input event,
-   for game win/lose cues where there's no natural release to hook. */
 static uint32_t gui_beep_off_at = 0;
 
 static void gui_beep(uint32_t freq_hz, uint32_t dur_ticks) {
@@ -769,10 +661,6 @@ static void gui_beep(uint32_t freq_hz, uint32_t dur_ticks) {
 #define ICON_START_Y 16
 #define ICON_SLOT    38
 
-/* WIN_TERMINAL/WIN_TERMINAL2/WIN_TERMINAL3 are 3 independent terminal
-   window slots (index i maps to terms[i] - see term_cur above) rather
-   than 3 different kinds of window; kept contiguous so range checks
-   (t>=WIN_TERMINAL && t<=WIN_TERMINAL3) work for "is this a terminal". */
 typedef enum {
     WIN_TERMINAL=0, WIN_TERMINAL2=1, WIN_TERMINAL3=2, WIN_FILES=3, WIN_SYSMON=4,
     WIN_CALC=5, WIN_EDITOR=6, WIN_PKG=7, WIN_BROWSER=8, WIN_WRITE=9, WIN_PAINT=10, WIN_SNAKE=11,
@@ -826,9 +714,6 @@ static int wm_topmost(void) {
     return -1;
 }
 
-/* Alt+Tab: walk the z-order ring backwards from the current top, focusing
-   the first other active/non-minimized window found. A no-op if there's
-   nothing else to switch to. */
 static void wm_cycle_focus(void) {
     if (zcount < 2) return;
     int top = wm_topmost();
@@ -874,9 +759,6 @@ static void wm_close_all(void) {
         if (wins[t].active) wm_close(t);
 }
 
-/* Double-click-the-titlebar maximize, toggling back to whatever geometry
-   the window had before - the rx/ry/rw/rh fields exist on winrec_t only
-   to remember that one prior state. */
 static void wm_toggle_maximize(int t) {
     winrec_t *w = &wins[t];
     if (w->maxed) {
@@ -994,7 +876,6 @@ static int taskbar_hit(int mx, int my) {
 }
 
 void gui_draw_desktop(void) {
-
     int dh = GUI_HEIGHT - 10;
     for (int y=10;y<GUI_HEIGHT;y++) {
         int band = ((y-10) * C_GRAD_SKY2_BANDS) / dh;
@@ -1024,12 +905,6 @@ void gui_draw_desktop(void) {
                "Drag bar to move, Esc to close");
 }
 
-/* Switching themes (Settings app) changes what build_palette() puts in
-   the wallpaper's palette slots, but the desktop is only ever drawn once
-   into desktop_cache at gui_run() startup and memcpy'd from there every
-   frame since - see desktop_cache's own comment. Redo that whole
-   one-time sequence so a theme change actually shows up live instead of
-   only taking effect on the next boot. */
 static void gui_apply_theme(void) {
     build_palette();
     front_valid = 0;
@@ -1150,7 +1025,6 @@ static void files_do_rename(void) {
 }
 
 static void render_files(winrec_t *w) {
-
     gui_window(w->x, w->y, w->w, w->h, "Files");
     gui_rect_fill(w->x+1, w->y+12, w->w-2, w->h-13, C_BLACK);
 
@@ -1172,11 +1046,7 @@ static void render_files(winrec_t *w) {
             }
             gui_puts(cx, w->y+w->h-9, "Click a file to view", C_DARK_GREY, C_BLACK);
         }
-        /* Re-lists the disk without closing/reopening the window - the
-           listing was otherwise only ever refreshed on open (or after a
-           delete from this same app), so a file created elsewhere (the
-           terminal, another app) while Files stayed open never showed up
-           until the window was closed and reopened. */
+
         gui_button(w->x+w->w-64, w->y+w->h-10, 62, 9, "Refresh",
                    gui_pressed(w->x+w->w-64, w->y+w->h-10, 62, 9));
     } else {
@@ -1240,7 +1110,6 @@ static void files_handle_click(winrec_t *w, int mx, int my) {
 }
 
 static void render_sysmon(winrec_t *w) {
-
     gui_window(w->x, w->y, w->w, w->h, "System Monitor");
     gui_rect_fill(w->x+1, w->y+12, w->w-2, w->h-13, C_BLACK);
 
@@ -1279,15 +1148,6 @@ static void render_sysmon(winrec_t *w) {
     }
 }
 
-/* Recomputes exactly where render_sysmon() put each task row (same
-   header-line count, same net-status branch, same dead/zombie filter -
-   a killed task's row has to stop being clickable at the same moment it
-   stops being drawn) so a click can be mapped back to the task it
-   landed on - kept in one place rather than a second copy of the header
-   layout, since only the click path needs to know the row's full width
-   for a hit test, not draw anything. Skips pid 0 (idle/kernel) and the
-   caller's own task (this GUI) - killing either would take the whole
-   desktop down with it. */
 static void sysmon_handle_click(winrec_t *w, int mx, int my) {
     int cy = w->y + 14 + 9*5;
     cy += net_ready() ? 9*2 : 9;
@@ -1425,8 +1285,6 @@ static void render_editor(winrec_t *w) {
     gui_puts(w->x+94, w->y+w->h-14, editor_status, C_DARK_GREY, C_WIN_BG);
 }
 
-/* Pulled out of the Save button's click handler so Ctrl+S can call the
-   exact same save logic without duplicating it. */
 static void editor_save(void) {
     char buf[EDIT_ROWS*(EDIT_COLS+1)]; int n=0;
     for (int i=0;i<=editor_row;i++) {
@@ -1462,13 +1320,6 @@ static void editor_handle_click(winrec_t *w, int mx, int my) {
     }
 }
 
-/* KumWrite: Notepad's bigger sibling - real filename field (New/Open/Save
-   against whatever name is typed there, not a fixed NOTES.TXT), a much
-   larger buffer, and a live word/char count. Same row/col text-buffer
-   model as Notepad (proven, so reused rather than reinvented), plus the
-   click-to-edit/navy-border text field pattern kubrowser's URL bar
-   introduced - the two fields are now visually and behaviorally
-   consistent instead of each app inventing its own text-input feel. */
 #define WRITE_ROWS 40
 #define WRITE_COLS 74
 #define WRITE_NAME_MAX 32
@@ -1494,7 +1345,7 @@ static void write_counts(int *words, int *chars) {
             if (ch == ' ' || ch == '\t') in_word = 0;
             else if (!in_word) { in_word = 1; w++; }
         }
-        if (i < write_row) c++;   /* the newline joining this line to the next */
+        if (i < write_row) c++;
     }
     *words = w; *chars = c;
 }
@@ -1533,9 +1384,6 @@ static void render_write(winrec_t *w) {
     gui_puts(w->x+3, w->y+w->h-10, statline, C_DARK_GREY, C_WIN_BG);
 }
 
-/* Pulled out of the Save button's click handler so Ctrl+S can call the
-   exact same save logic without duplicating it (same reasoning as
-   editor_save() above). */
 static void write_save(void) {
     if (!write_filename[0]) { kstrcpy(write_status, "Need a filename"); return; }
     char buf[WRITE_ROWS*(WRITE_COLS+1)]; int n=0;
@@ -1588,16 +1436,6 @@ static void write_handle_click(winrec_t *w, int mx, int my) {
     }
 }
 
-/* Paint - a simple pixel canvas. Genuinely exercises the framebuffer
-   directly rather than just text/rects like every other app so far.
-   Canvas is stored as its own indexed-color byte array (same encoding
-   backbuf/gui_pixel already use) and blitted a row at a time via
-   kmemcpy straight into backbuf - a per-pixel gui_pixel() loop over
-   PAINT_W*PAINT_H (60000 calls/frame) would've been the single most
-   expensive thing in the whole GUI by a wide margin; row-at-a-time
-   kmemcpy is the same trick the desktop-background cache uses to avoid
-   that cost, just applied to content that (unlike the desktop) actually
-   changes and can't be pre-computed once. */
 #define PAINT_W 300
 #define PAINT_H 190
 
@@ -1616,9 +1454,6 @@ static void paint_clear(void) {
             paint_canvas[y][x] = C_WHITE;
 }
 
-/* paint_canvas is one contiguous PAINT_H*PAINT_W byte block (row-major,
-   same indexed-color encoding backbuf uses) - dumping/restoring it is
-   just a flat fat12_write/fat12_read, no per-pixel serialization needed. */
 static void paint_save(void) {
     fat12_write("CANVAS.PNT", &paint_canvas[0][0], PAINT_H*PAINT_W);
 }
@@ -1627,12 +1462,6 @@ static void paint_load(void) {
     fat12_read("CANVAS.PNT", &paint_canvas[0][0], PAINT_H*PAINT_W);
 }
 
-/* A 3x3 dab instead of a single pixel - painting only plots wherever the
-   mouse actually was each frame (no line interpolation between last
-   frame's position and this one), so a bare single-pixel brush left
-   visible gaps in anything but a very slow stroke. Still not a real line
-   between samples, just a big enough dot that consecutive samples
-   overlap at ordinary drag speed. */
 static void paint_dot(int lx, int ly) {
     for (int dy=-1; dy<=1; dy++)
         for (int dx=-1; dx<=1; dx++) {
@@ -1681,14 +1510,6 @@ static void paint_handle_click(winrec_t *w, int mx, int my) {
     }
 }
 
-/* Snake - the first actual game on this OS (everything before it, even
-   Paint, is a productivity tool). Keyboard-only, no click handler needed
-   (nothing clickable inside it - see gui_run()'s key-routing switch
-   instead of the click-dispatch chain). Movement runs on its own fixed
-   tick interval read off timer_ticks(), independent of however fast the
-   GUI's own render loop happens to be running - render_snake() gets
-   called every frame regardless, but only actually advances the snake
-   every 150ms. */
 #define SNAKE_COLS 20
 #define SNAKE_ROWS 15
 #define SNAKE_CELL 10
@@ -1706,11 +1527,6 @@ static uint32_t snake_last_tick = 0;
 static int      snake_hi = 0;
 static int      snake_hi_loaded = 0;
 
-/* Best score persisted as 4 raw little-endian bytes in a tiny file -
-   simplest possible on-disk format for a single int, no need for
-   anything more structured. Loaded once (guarded by snake_hi_loaded,
-   same one-shot-init shape render_snake() already uses for
-   snake_started) rather than re-reading the disk every frame. */
 static void snake_load_hi(void) {
     if (snake_hi_loaded) return;
     snake_hi_loaded = 1;
@@ -1763,8 +1579,7 @@ static void snake_step(void) {
     int grow = (nx==snake_food_x && ny==snake_food_y);
     int new_len = grow ? snake_len+1 : snake_len;
     if (new_len > SNAKE_MAX_LEN) new_len = SNAKE_MAX_LEN;
-    /* shift every segment out by one, high index first so each read of
-       body[i-1] happens before that slot gets overwritten */
+
     for (int i = new_len-1; i > 0; i--) snake_body[i] = snake_body[i-1];
     snake_body[0].x = (int8_t)nx; snake_body[0].y = (int8_t)ny;
     snake_len = new_len;
@@ -1807,13 +1622,6 @@ static void render_snake(winrec_t *w) {
         gui_puts(cx0, cy0+ch+14, "Arrow keys to steer", C_DARK_GREY, C_WIN_BG);
 }
 
-/* Piano - click and hold a key to sound it via the PC speaker
-   (speaker_on()/speaker_off() are non-blocking register pokes, unlike
-   speaker_beep() which sleeps for a fixed duration - exactly the
-   press-and-hold-to-sustain interaction a piano key needs, no timing
-   assumptions baked in). One octave, white keys only (no sharps/flats -
-   this is a demo of "the GUI can drive real hardware audio", not a
-   real instrument). */
 #define PIANO_KEYS 8
 static const uint32_t piano_freqs[PIANO_KEYS] = {262,294,330,349,392,440,494,523};
 static const char     piano_names[PIANO_KEYS] = {'C','D','E','F','G','A','B','C'};
@@ -1848,10 +1656,6 @@ static void piano_handle_click(winrec_t *w, int mx, int my) {
     }
 }
 
-/* 2048 - the classic slide-and-merge puzzle. Distinct game mechanics
-   from Snake (merging instead of movement/collision), same arrow-key
-   input model. board[r][c]==0 means empty; anything else is the actual
-   tile value (2, 4, 8, ...). */
 static int g2048_board[4][4];
 static int g2048_score = 0;
 static int g2048_over  = 0;
@@ -1859,9 +1663,6 @@ static int g2048_started = 0;
 static int g2048_hi = 0;
 static int g2048_hi_loaded = 0;
 
-/* Same tiny raw-int-file persistence as Snake's snake_load_hi()/
-   snake_save_hi() - not worth a shared helper for two 6-line functions
-   differing only in filename and variable name. */
 static void g2048_load_hi(void) {
     if (g2048_hi_loaded) return;
     g2048_hi_loaded = 1;
@@ -1891,12 +1692,6 @@ static void g2048_reset(void) {
     g2048_spawn(); g2048_spawn();
 }
 
-/* Compresses out zeros, merges equal adjacent pairs (each tile merges at
-   most once per move - the classic 2048 rule, why this can't just be a
-   sort), pads the rest back out with zeros. Returns whether the line
-   actually changed, so the caller only spawns a new tile / re-checks
-   game-over on moves that did something (arrow keys that don't move
-   anything shouldn't cost the player a free tile). */
 static int g2048_line_merge(int line[4]) {
     int tmp[4], n=0;
     for (int i=0;i<4;i++) if (line[i]) tmp[n++] = line[i];
@@ -1924,12 +1719,6 @@ static int g2048_no_moves_left(void) {
     return 1;
 }
 
-/* dir: 0=left, 1=right, 2=up, 3=down. Builds each row/column as a 4-
-   element line in the order tiles should slide toward (index 0 = the
-   leading edge), merges it, writes it back in the same order it came
-   from - keeping the extraction/write-back symmetric like this is what
-   makes one merge function work for all four directions instead of
-   needing bespoke logic per direction. */
 static void g2048_move(int dir) {
     int changed_any = 0;
     if (dir==0 || dir==1) {
@@ -2012,11 +1801,6 @@ static void render_2048(winrec_t *w) {
         gui_puts(cx0, by+10, "Arrow keys to slide", C_DARK_GREY, C_WIN_BG);
 }
 
-/* Minesweeper - classic 9x9/10-mine board. mine_board[r][c] is -1 for a
-   mine, else the count of mines in the 8 surrounding cells (what gets
-   shown once a cell is revealed). Separate from Snake/2048 in that it
-   needs both mouse buttons (left reveal, right flag) rather than just
-   arrow keys. */
 #define MINE_COLS  9
 #define MINE_ROWS  9
 #define MINE_MINES 10
@@ -2026,13 +1810,10 @@ static int8_t mine_board[MINE_ROWS][MINE_COLS];
 static uint8_t mine_revealed[MINE_ROWS][MINE_COLS];
 static uint8_t mine_flagged[MINE_ROWS][MINE_COLS];
 static int mine_started = 0;
-static int mine_over = 0;   /* 0 = playing, 1 = lost, 2 = won */
+static int mine_over = 0;
 static int mine_wins = 0;
 static int mine_wins_loaded = 0;
 
-/* Same tiny raw-int-file persistence as Snake/2048's high scores -
-   a win *count* rather than a score, but the same "4 bytes, one-shot
-   load" shape applies. */
 static void mine_load_wins(void) {
     if (mine_wins_loaded) return;
     mine_wins_loaded = 1;
@@ -2080,15 +1861,7 @@ static void mine_reset(void) {
         }
 }
 
-/* Iterative flood fill (explicit stack, not recursion - kernel stacks
-   here are small and 81 cells is nothing to just loop over) - reveals
-   a 0-count cell's whole connected blank region plus its numbered
-   border, the standard minesweeper "click an empty area" behavior. */
 static void mine_flood(int r0, int c0) {
-    /* each of the up to ROWS*COLS cells can push up to 8 neighbors before
-       it's marked revealed and future pushes of it are filtered out at
-       pop time, so the stack needs room for that fan-out, not just one
-       slot per cell. */
     int sr[MINE_ROWS*MINE_COLS*9], sc[MINE_ROWS*MINE_COLS*9], sp = 0;
     sr[sp]=r0; sc[sp]=c0; sp++;
     while (sp > 0) {
@@ -2209,10 +1982,7 @@ static void render_settings(winrec_t *w) {
 
     for (int i = 0; i < GUI_THEME_COUNT; i++) {
         int sx, sy; settings_swatch_rect(w, i, &sx, &sy);
-        /* No arbitrary-RGB fill available outside the fixed 256-color
-           palette this whole GUI draws through - approximate each
-           theme's swatch with the closest thing already on the palette
-           instead of adding a one-off true-color path just for this. */
+
         uint8_t approx = (i==0) ? C_LIGHT_BLUE : (i==1) ? C_ORANGE : C_LIGHT_GREEN;
         gui_rect_fill(sx, sy, SETTINGS_SWATCH_W, SETTINGS_SWATCH_H, approx);
         gui_rect(sx, sy, SETTINGS_SWATCH_W, SETTINGS_SWATCH_H,
@@ -2336,10 +2106,6 @@ static void pkg_handle_click(winrec_t *w, int mx, int my) {
     }
 }
 
-/* kubrowser: a real DNS+TCP/TLS fetch (browser.c, reusing the from-scratch
-   TLS 1.2 stack) followed by a tag-stripping HTML-to-text pass - a reader,
-   not a layout engine. Default home page is Ecosia per the European-
-   defaults preference for anything browser-shaped on this OS. */
 #define BROWSER_URL_MAX 128
 static char browser_urlbar[BROWSER_URL_MAX] = "https://www.ecosia.org/";
 static int  browser_editing = 1;
@@ -2378,9 +2144,6 @@ static void render_browser(winrec_t *w) {
     }
 }
 
-/* Blocking, same as every other network op in this OS (cmd_https, the
-   package manager's own fetches) - no async/threads to do it any other
-   way. The whole GUI freezes for the duration of the fetch. */
 static void browser_go(void) {
     browser_editing = 0;
     browser_scroll = 0;
@@ -2398,12 +2161,7 @@ static void browser_handle_click(winrec_t *w, int mx, int my) {
 
 #define LAUNCH_ROW_H 16
 #define LAUNCH_W     168
-/* 13 built-in apps alone now exceed the old cap of 16 once even a
-   handful of installed packages are added on top - this was silently
-   truncating the launcher on a disk with most of the embedded packages
-   already present (confirmed: 13 built-ins + up to 17 embedded packages
-   left only ~3 package slots before the old cap cut the rest). Room for
-   plenty of headroom past what's installed today. */
+
 #define LAUNCH_MAX   48
 
 typedef struct { const char *label; icon_kind_t icon; int wintype; int is_pkg; int pkg_idx; } launch_item_t;
@@ -2480,7 +2238,6 @@ static void draw_launcher(void) {
     }
 }
 
-/* -2 = click outside the panel, -1 = inside panel but not on a row, >=0 = row index */
 static int launcher_hit(int mx, int my, int n) {
     int h = n*LAUNCH_ROW_H + 6;
     if (!point_in(mx, my, 1, 11, LAUNCH_W, h)) return -2;
@@ -2514,7 +2271,6 @@ static void draw_ctxmenu(void) {
     }
 }
 
-/* -2 = click outside the menu, -1 = inside but not on a row, >=0 = row index */
 #define CONFIRM_W 190
 #define CONFIRM_H 54
 
@@ -2547,8 +2303,6 @@ static void draw_confirm(void) {
     gui_button(x+CONFIRM_W-78, by, 60, 14, "No", gui_pressed(x+CONFIRM_W-78, by, 60, 14));
 }
 
-/* Returns 1 if the click was consumed by the modal (whether or not it
-   landed on a button - nothing behind it should ever see this click). */
 static int confirm_handle_click(int mx, int my) {
     if (confirm_pending == CONFIRM_NONE) return 0;
     int x, y; confirm_rect(&x, &y);
@@ -2594,14 +2348,10 @@ void gui_run(void) {
     int resizing = -1, resize_ow = 0, resize_oh = 0, resize_mx = 0, resize_my = 0;
     int running = 1;
 
-    /* Build the static desktop background once, into backbuf via the
-       normal draw calls, then snapshot it - the loop below just restores
-       this snapshot every frame instead of recomputing it. */
     gui_draw_desktop();
     kmemcpy(desktop_cache, backbuf, GUI_WIDTH * GUI_HEIGHT);
 
     while (running) {
-
         kmemcpy(backbuf, desktop_cache, GUI_WIDTH * GUI_HEIGHT);
 
         for (int i=0;i<zcount;i++) {
@@ -2634,10 +2384,6 @@ void gui_run(void) {
         if (mx < 0) mx = 0; if (mx >= GUI_WIDTH)  mx = GUI_WIDTH-1;
         if (my < 0) my = 0; if (my >= GUI_HEIGHT) my = GUI_HEIGHT-1;
 
-        /* one frame of latency (next iteration's render pass reads these,
-           this iteration's already happened above) - same tradeoff any
-           immediate-mode UI redrawn every frame makes, not worth an extra
-           render pass just to shave off one frame of button-press lag. */
         cur_mx = mx; cur_my = my; cur_mdown = m->left;
 
         gui_draw_cursor(mx, my);
@@ -2663,20 +2409,12 @@ void gui_run(void) {
             } else if (key == '\t' && keyboard_alt_held()) {
                 wm_cycle_focus();
             } else if (key == 19 && top == WIN_EDITOR) {
-                /* keyboard.c already folds Ctrl+<letter> down to its
-                   control-code value (c -= 96) before this ever reaches
-                   the GUI - Ctrl+S arrives as 19 (0x13/DC3), never as a
-                   literal 's' with keyboard_ctrl_held() true, so that's
-                   what has to be matched here, not the letter. */
                 editor_save();
             } else if (key == 19 && top == WIN_WRITE) {
                 write_save();
             } else if (key == 14 && top == WIN_WRITE) {
-                /* Ctrl+N -> 14 (0x0E), same fold-to-control-code as
-                   Ctrl+S above. */
                 write_new();
             } else if (key == 15 && top == WIN_WRITE) {
-                /* Ctrl+O -> 15 (0x0F, SI). */
                 write_open();
             } else if (top == WIN_EDITOR) {
                 if (key == '\n') {
@@ -2698,9 +2436,6 @@ void gui_run(void) {
                     if (key == '\n') browser_go();
                     else gui_textfield_key(browser_urlbar, BROWSER_URL_MAX, key);
                 } else {
-                    /* no scroll wheel on this OS's PS/2 mouse driver - up/
-                       down arrows scroll a line, space a page, same as a
-                       pager would. */
                     if (key == KEY_UP) { if (browser_scroll > 0) browser_scroll--; }
                     else if (key == KEY_DOWN) browser_scroll++;
                     else if (key == ' ') browser_scroll += 15;
@@ -2784,7 +2519,6 @@ void gui_run(void) {
                 else launcher_open_wintype(items[row].wintype);
             }
         } else if (left_now && !prev_left) {
-
             int hit = -1;
             for (int i=zcount-1;i>=0 && hit<0;i--) {
                 int t = zorder[i];
@@ -2871,14 +2605,6 @@ void gui_run(void) {
             if (ny+w->h > GUI_HEIGHT) ny = GUI_HEIGHT-w->h;
             w->x = nx; w->y = ny;
         } else if (!left_now && dragging >= 0) {
-            /* Aero-Snap-style drop-at-the-edge: released against the
-               very left or right of the screen while dragging a
-               titlebar snaps that window to a half-screen tile, same
-               spirit as double-click-maximize but triggered by drag
-               position instead of a click count. No saved "pre-snap"
-               geometry (unlike wm_toggle_maximize) - dragging the
-               titlebar back away from the edge is already how you'd
-               undo a normal move, so a second mechanism isn't needed. */
             winrec_t *w = &wins[dragging];
             if (mx <= 1) {
                 w->x = 0; w->y = 10; w->w = GUI_WIDTH/2; w->h = GUI_HEIGHT-10;
@@ -2900,11 +2626,6 @@ void gui_run(void) {
         }
         if (!left_now) resizing = -1;
 
-        /* Continuous painting while the button stays down, same shape as
-           the dragging/resizing blocks above - paint_handle_click() above
-           only lays down the first pixel (it's on the click-down edge),
-           this is what makes dragging the mouse across the canvas draw a
-           real stroke instead of just isolated dots. */
         if (left_now && g_painting && wins[WIN_PAINT].active) {
             winrec_t *w = &wins[WIN_PAINT];
             int cx0 = w->x+4, cy0 = w->y+14;
@@ -2914,11 +2635,6 @@ void gui_run(void) {
         }
         if (!left_now) g_painting = 0;
 
-        /* Piano key release - same "reset a state flag on button-up"
-           shape as painting/dragging/resizing above, just silencing the
-           speaker instead of ending a stroke. Releasing anywhere (not
-           just still over the key) stops the note - simplest correct
-           behavior for a press-and-hold instrument key. */
         if (!left_now && piano_active >= 0) {
             speaker_off();
             piano_active = -1;

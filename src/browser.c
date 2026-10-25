@@ -23,8 +23,6 @@ const char *browser_title(void)      { return browser_title_buf[0] ? browser_tit
 const char *browser_status(void)     { return browser_status_buf; }
 const char *browser_url(void)        { return browser_url_buf; }
 
-/* kstring.h has no strstr/case-insensitive compare - both small enough to
-   just write locally rather than grow the shared string lib for one file. */
 static const char *find_sub(const char *hay, const char *hay_end, const char *needle) {
     int nlen = (int)kstrlen(needle);
     for (const char *p = hay; p + nlen <= hay_end; p++) {
@@ -56,9 +54,6 @@ static const char *find_header(const char *headers, const char *headers_end, con
     return 0;
 }
 
-/* "https://host[:port]/path" (scheme-less input is treated as https - see
-   browser.h). Splits in place into the three output params; path defaults
-   to "/" if the url has nothing after the host. */
 static void parse_url(const char *url, int *use_tls, char *host, int host_sz,
                        uint16_t *port, char *path, int path_sz) {
     const char *p = url;
@@ -97,7 +92,7 @@ static int fetch_via_tcp(uint32_t ip, uint16_t port, const char *req, uint8_t *b
         if (n > 0) {
             *total += (uint32_t)n;
             idle = 0;
-            tcp_send(s, 0, 0);   /* re-ACK, same as pkgnet's http_fetch() */
+            tcp_send(s, 0, 0);
         } else {
             idle++;
             timer_sleep(10);
@@ -129,10 +124,6 @@ static int fetch_via_tls(uint32_t ip, uint16_t port, const char *sni, const char
     return 0;
 }
 
-/* Decodes "Transfer-Encoding: chunked" bodies in place - <hex-size>\r\n
-   <that many bytes>\r\n, repeated, terminated by a 0-size chunk. Returns
-   the decoded length (may shrink body_len since chunk-size lines and
-   their \r\n delimiters are removed). */
 static uint32_t dechunk(uint8_t *body, uint32_t body_len) {
     uint8_t *out = body;
     const uint8_t *p = body, *end = body + body_len;
@@ -158,9 +149,6 @@ static uint32_t dechunk(uint8_t *body, uint32_t body_len) {
     return (uint32_t)(out - body);
 }
 
-/* Very small HTML-entity table - enough to make ordinary prose readable,
-   not a real entity-reference implementation (no numeric &#nnnn; beyond
-   the couple of common ones spelled out here, no named-entity table). */
 static int decode_entity(const char *p, const char *end, char *out) {
     if (p[0]!='&') return 0;
     struct { const char *name; char ch; } ents[] = {
@@ -175,10 +163,6 @@ static int decode_entity(const char *p, const char *end, char *out) {
     return 0;
 }
 
-/* Word-wraps into browser_lines_buf as it goes so the whole rendered page
-   never needs a second buffer - one output char at a time, breaking at
-   the last space seen once a line fills up (falls back to a hard break
-   mid-word for one giant unbroken token, e.g. a long URL). */
 static int  out_row = 0;
 static char out_line[BROWSER_LINE_LEN+1];
 static int  out_col = 0;
@@ -193,14 +177,11 @@ static void out_flush(void) {
     out_last_space = -1;
 }
 static void out_newline(void) {
-    /* collapse repeated blank lines - HTML block tags are dense (every
-       <div>, every <li>...) and a literal newline per tag would leave
-       the rendered page mostly whitespace. */
     if (out_col == 0 && out_row > 0 && browser_lines_buf[out_row-1][0] == 0) return;
     out_flush();
 }
 static void out_char(char c) {
-    if (c == ' ' && out_col == 0) return;    /* no leading spaces on a wrapped line */
+    if (c == ' ' && out_col == 0) return;
     if (out_col >= BROWSER_LINE_LEN) {
         if (out_last_space > 0) {
             char tail[BROWSER_LINE_LEN+1];
@@ -218,12 +199,6 @@ static void out_char(char c) {
     out_line[out_col++] = c;
 }
 
-/* The actual HTML->text pass: strips every <...> tag, skips <script>/
-   <style> content entirely, turns block-level tags into line breaks,
-   decodes the small entity set above, and captures <title>...</title>
-   text separately for the window title. No attribute parsing beyond
-   recognizing the tag name itself - href targets, image alts, etc. are
-   invisible to this (it's a reader, not a browser engine). */
 static void html_to_text(const char *body, uint32_t len) {
     out_row = 0; out_col = 0; out_last_space = -1;
     browser_title_buf[0] = 0;
@@ -282,10 +257,6 @@ static void html_to_text(const char *body, uint32_t len) {
     browser_nlines = out_row;
 }
 
-/* One real GET, following at most one redirect (Location: header on a
-   30x). Populates browser_lines_buf/title/status/url on either success
-   or a clean failure message - never leaves stale content from a
-   previous page half-overwritten. */
 int browser_navigate(const char *url) {
     kstrncpy(browser_url_buf, url, sizeof(browser_url_buf)-1);
     browser_url_buf[sizeof(browser_url_buf)-1] = 0;

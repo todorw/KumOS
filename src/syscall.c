@@ -1,4 +1,3 @@
-
 #include "syscall.h"
 #include "idt.h"
 #include "vga.h"
@@ -24,11 +23,6 @@ extern void isr128(void);
 extern void user_entry_trampoline(void);
 extern void switch_context(uint32_t *old_esp, uint32_t new_esp);
 
-/* Exact stack layout isr128 builds before calling us: pusha, then
-   push ds/es/fs/gs, then the CPU's own ring3->ring0 transition pushes
-   (eip/cs/eflags/useresp/ss). Needed so sc_fork() can build a child
-   that resumes at the parent's real return address instead of a
-   fabricated one - see the invalid-opcode panic this fixed. */
 typedef struct syscall_regs {
     uint32_t gs, fs, es, ds;
     uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax;
@@ -37,12 +31,6 @@ typedef struct syscall_regs {
 
 static syscall_regs_t *g_cur_regs;
 
-/* Every syscall below that takes a raw user pointer must run it through
-   one of these before dereferencing it - see paging_user_range_ok()'s
-   comment for what this closes (arbitrary kernel-memory read/write from
-   ring 3). USTR_MAX bounds the walk for path-shaped strings; it matches
-   VFS_MAX_PATH so a path that would get rejected downstream anyway is
-   rejected here just as validly. */
 #define USTR_MAX 128
 static inline int ubuf_r(uint32_t addr, uint32_t len) { return paging_user_range_ok(addr, len, 0); }
 static inline int ubuf_w(uint32_t addr, uint32_t len) { return paging_user_range_ok(addr, len, 1); }

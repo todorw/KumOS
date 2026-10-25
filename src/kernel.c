@@ -1,4 +1,3 @@
-
 #include <stdint.h>
 #include <stddef.h>
 #include "vga.h"
@@ -97,9 +96,6 @@ static void kprintf(const char *fmt, ...) {
     __builtin_va_end(ap);
 }
 
-/* kprintf above has no width-specifier support (%8u is parsed as an
-   unrecognized "%8" - nothing consumed - followed by a literal 'u'), so
-   any right-justified numeric column needs this instead. */
 static void put_dec_pad(uint32_t v, int width) {
     char buf[12]; kitoa(v, buf, 10);
     int len = (int)kstrlen(buf);
@@ -238,13 +234,11 @@ static void cmd_https(const char *args) {
     if (!*path) kstrcpy(path, "/");
 
     uint32_t ip; uint16_t port = 443;
-    char http_host[64];   /* goes in the HTTP Host: header either way */
-    char sni_host[64];    /* SNI extension - empty for a raw IP target */
+    char http_host[64];
+    char sni_host[64];
 
-    /* a bare dotted IP (with an optional :port) skips DNS entirely - lets
-       you point at a repo/test server directly, e.g. "https 10.0.2.2:8443" */
     if (pkgnet_parse_addr(hostport, &ip, &port) == 0) {
-        if (kstrchr(hostport, ':') == 0) port = 443;   /* no :port given, don't inherit pkgnet's default 8080 */
+        if (kstrchr(hostport, ':') == 0) port = 443;
         kprintf("  -> %u.%u.%u.%u:%u (no DNS needed)\n",
                 (ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF, port);
         kstrcpy(http_host, hostport);
@@ -270,9 +264,7 @@ static void cmd_https(const char *args) {
     }
 
     vga_puts("TLS handshake (TLS_RSA_WITH_AES_128_CBC_SHA)...\n");
-    /* tls_conn_t is ~16KB (dominated by its receive buffer) - way too big
-       for a kernel stack frame (SCHED_STACK_SIZE is 4KB), so it's heap
-       allocated rather than a local. */
+
     tls_conn_t *tls = (tls_conn_t*)kmalloc(sizeof(tls_conn_t));
     if (!tls) { vga_puts("https: out of memory\n"); return; }
     if (tls_connect(tls, ip, port, sni_host) != 0) {
@@ -301,11 +293,6 @@ static void cmd_https(const char *args) {
     kfree(tls);
 }
 
-/* CLI front-end for browser.c's fetch+HTML-to-text pass (the same code
-   the GUI's kubrowser window uses) - a real command in its own right for
-   a quick page-to-text read without opening the GUI, not just a test
-   hook, though it did double as the fastest way to verify the HTML
-   parser without fighting QEMU's mouse automation. */
 static void cmd_fetch(const char *args) {
     if (!*args) { vga_puts("Usage: fetch <url>\n"); return; }
     vga_puts("Fetching...\n");
@@ -449,7 +436,6 @@ static void cmd_mmap(const char *args) {
     split_cmd(args, sub, rest2, 32);
 
     if (kstrcmp(sub,"alloc")==0) {
-
         uint32_t kb = 0;
         const char *p = rest2;
         while(*p>='0'&&*p<='9'){kb=kb*10+(*p-'0');p++;}
@@ -463,9 +449,7 @@ static void cmd_mmap(const char *args) {
         } else {
             vga_puts("  vmalloc failed (OOM or region full)\n");
         }
-
     } else if (kstrcmp(sub,"free")==0) {
-
         uint32_t addr = 0;
         const char *p = rest2;
         if (p[0]=='0'&&p[1]=='x') p+=2;
@@ -475,9 +459,7 @@ static void cmd_mmap(const char *args) {
         }
         vmfree((void*)addr);
         kprintf("  vmfree(0x%x) done\n", addr);
-
     } else if (kstrcmp(sub,"cow")==0) {
-
         uint32_t addr = 0;
         const char *p = rest2;
         if (p[0]=='0'&&p[1]=='x') p+=2;
@@ -489,9 +471,7 @@ static void cmd_mmap(const char *args) {
             kprintf("  Page 0x%x marked COW (read-only until write)\n", addr);
         else
             vga_puts("  COW failed (page not mapped?)\n");
-
     } else if (kstrcmp(sub,"query")==0) {
-
         uint32_t addr = 0;
         const char *p = rest2;
         if (p[0]=='0'&&p[1]=='x') p+=2;
@@ -506,7 +486,6 @@ static void cmd_mmap(const char *args) {
         } else {
             kprintf("  0x%x is NOT mapped\n", addr);
         }
-
     } else {
         vga_puts("  Usage:\n");
         vga_puts("    mmap alloc <kb>       - allocate virtual region\n");
@@ -784,7 +763,6 @@ static void cmd_dformat(void) {
 }
 
 static void cmd_dcp(const char *args) {
-
     char src[32], dst[32];
     split_cmd(args, src, dst, 32);
     if (!*src || !*dst) { vga_puts("Usage: dcp <diskfile> <memfile>\n"); return; }
@@ -1054,17 +1032,7 @@ static void dispatch(const char *line) {
             while(*p>='0'&&*p<='9'){pid=pid*10+(*p-'0');p++;}
             kprintf("Waiting for PID %d...\n", pid);
             int code = sched_waitpid(pid);
-            /* sched_waitpid()'s busy-wait loop resumes this task through
-               switch_context()'s raw popfd/ret, not an interrupt's iret -
-               it only comes back with interrupts on if something further
-               up the call chain (a syscall ISR's epilogue, say) eventually
-               irets and restores them. Called straight from this bare
-               kernel shell (task 0, no such ISR above it), that never
-               happens: popfd just replays whatever IF was live at the cli
-               right before the last switch, which is always 0 - leaving
-               every hlt from here on hanging forever. Every sched_waitpid()
-               call site that isn't itself inside an interrupt handler
-               needs this same explicit sti. */
+
             __asm__ volatile("sti");
             kprintf("PID %d exited with code %d\n", pid, code);
         }
@@ -1295,7 +1263,6 @@ static void dispatch(const char *line) {
         }
     }
     else if(kstrcmp(cmd,"hexdump")==0) {
-
         if (!*rest) { vga_puts("Usage: hexdump <0xaddr> [len]\n"); }
         else {
             uint32_t addr = 0; uint32_t len = 64;
@@ -1411,7 +1378,6 @@ static void dispatch(const char *line) {
 }
 
 void kernel_main(uint32_t magic, multiboot_info_t *mbi) {
-
     vga_init();
     vga_font_snapshot();
     dmesg_init();

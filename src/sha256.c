@@ -77,7 +77,6 @@ void sha256_final(sha256_ctx_t *ctx, uint8_t out[32]) {
 
     uint8_t lenbytes[8];
     for (int i = 0; i < 8; i++) lenbytes[i] = (uint8_t)(bitlen >> (56 - 8*i));
-    /* append directly, bypassing bitlen tracking since we're done counting */
     for (int i = 0; i < 8; i++) ctx->buf[ctx->buflen+i] = lenbytes[i];
     ctx->buflen += 8;
     sha256_transform(ctx, ctx->buf);

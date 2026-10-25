@@ -1,4 +1,3 @@
-
 #include "elf.h"
 #include "paging.h"
 #include "fat12.h"

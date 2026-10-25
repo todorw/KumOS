@@ -1,4 +1,3 @@
-
 #include "paging.h"
 #include "idt.h"
 #include "vga.h"
@@ -40,16 +39,6 @@ void pmm_init(uint32_t mem_kb) {
     }
 }
 
-/* pmm_refs[] is read-modify-written from every task's context (vmalloc,
-   paging_clone_dir, demand paging, ...) with the scheduler free to preempt
-   between the read and the write on any timer tick - two tasks landing in
-   that gap for the same frame could both see it free and both claim it.
-   A real, independent correctness gap regardless of what triggers it, so
-   fixed here on its own merits. Tested against the long-open "GUI corrupts
-   near the border" report (round 20/26/27) while chasing it this round:
-   this alone does NOT stop that corruption (confirmed live, fix in place,
-   reproduced again) - see paging_clone_dir()'s comment below for the
-   actual mechanism found instead. */
 static inline uint32_t irq_save_cli(void) {
     uint32_t flags;
     __asm__ volatile ("pushfl; pop %0; cli" : "=r"(flags) :: "memory");
@@ -59,27 +48,6 @@ static inline void irq_restore(uint32_t flags) {
     __asm__ volatile ("push %0; popfl" :: "r"(flags) : "memory");
 }
 
-/* Never hands out a frame inside PDE1's own physical range
-   [0x400000, 0x800000). Every OTHER low PDE (0, 2-31ish, covering the
-   rest of physical RAM) is always aliased identically into every
-   process's page directory (see paging_clone_dir()), so a frame from
-   anywhere else is guaranteed identity-accessible no matter which
-   directory happens to be current - the codebase-wide convention of
-   treating pmm_alloc()'s return value as a directly-dereferenceable
-   pointer depends on exactly that. PDE1 is the one exception: it's
-   deep-copied and bounded per-process (paging_set_pde1_clone_bound()), so
-   a frame from inside it is only identity-accessible from whichever
-   specific directory's bound happens to cover it - and plenty of code
-   (paging_clone_dir()'s own bookkeeping, elf_load_mem()'s segment
-   loading, every ring-3 stack setup) does pmm_alloc() then an immediate
-   kmemset()/kmemcpy() straight through the returned physical address,
-   with no guarantee the CURRENTLY active directory's PDE1 bound covers
-   whatever pmm_alloc() just handed back. Found the hard way, three
-   separate times, each confirmed live with a hardware breakpoint on the
-   exact page fault: excluding this one narrow, otherwise-unneeded range
-   (about 3% of a typical 127MB machine) from the general allocator
-   entirely closes the whole class of bug in one place, instead of
-   auditing every pmm_alloc()-then-kmemset() call site in the codebase. */
 static uint32_t pmm_hint = 0;
 
 uint32_t pmm_alloc(void) {
@@ -107,12 +75,7 @@ uint32_t pmm_alloc(void) {
 void pmm_free(uint32_t addr) {
     uint32_t idx = frame_idx(addr);
     if (idx >= PMM_MAX_FRAMES) return;
-    /* Never let a bug (this round's fork/exec paging fix included) free a
-       frame the kernel's own image/heap is still sitting on - see
-       KERNEL_RESERVED_END's comment in paging.h. This alone doesn't stop
-       a caller from unmapping the PTE that points at one (paging_unmap()
-       calls this after clearing the PTE either way), just from the
-       physical frame being handed back out to someone else afterward. */
+
     if (idx < frame_idx(KERNEL_RESERVED_END)) return;
     uint32_t flags = irq_save_cli();
     if (pmm_refs[idx] != 0) {
@@ -141,8 +104,6 @@ uint32_t pmm_total(void) { return pmm_total_frames; }
 
 static uint32_t page_dir[PAGE_ENTRIES] __attribute__((aligned(PAGE_SIZE)));
 
-/* Covers up to 256MB (matches PMM_MAX_FRAMES) - paging_init() only uses as
-   many of these as the machine's actual RAM needs, see num_kern_tables. */
 #define MAX_PREINIT_TABLES 64
 static uint32_t kern_tables[MAX_PREINIT_TABLES][PAGE_ENTRIES]
                             __attribute__((aligned(PAGE_SIZE)));
@@ -171,12 +132,6 @@ static inline uint32_t current_dir_phys(void) {
     return cr3;
 }
 
-/* Resolves against whatever directory CR3 currently points at, not always
-   the boot-time static page_dir - essential now that paging_clone_dir()
-   gives PDE 1 (where user code lives, see below) its own private table per
-   process instead of aliasing the same one everywhere. Before this, any
-   paging_map() call after a directory switch silently wrote into the old
-   (often unrelated) directory instead of the one actually active. */
 static uint32_t *pte_ptr(uint32_t virt, int alloc) {
     uint32_t di = PAGE_DIR_IDX(virt);
     uint32_t ti = PAGE_TBL_IDX(virt);
@@ -225,18 +180,9 @@ int paging_is_mapped(uint32_t virt) {
     return pte && (*pte & PAGE_PRESENT);
 }
 
-/* Ring-3 syscall arguments are raw addresses the caller chose - nothing
-   upstream of these two checks ever confirmed they actually point into
-   THIS process's own mapped memory before the kernel (running at ring 0,
-   where the CPU's own U/S page-protection check never fires) read or wrote
-   through them directly. That let any user program hand a kernel address
-   to write()/read() as if it were its own buffer: write() leaked kernel
-   memory out over stdout, read() overwrote arbitrary kernel memory with
-   attacker-controlled bytes. Every PTE touched must be PRESENT and USER
-   (and WRITE, for a buffer the kernel is about to write into). */
 int paging_user_range_ok(uint32_t addr, uint32_t len, int need_write) {
     if (!addr || !len) return 0;
-    if (addr + len < addr) return 0;               /* wraps past 4GB */
+    if (addr + len < addr) return 0;
     uint32_t start = addr & ~0xFFF;
     uint32_t end   = (addr + len - 1) & ~0xFFF;
     for (uint32_t page = start; ; page += PAGE_SIZE) {
@@ -248,10 +194,6 @@ int paging_user_range_ok(uint32_t addr, uint32_t len, int need_write) {
     return 1;
 }
 
-/* Same idea for a NUL-terminated string argument (a path, mostly), whose
-   length isn't known up front - walks byte by byte, re-checking the PTE
-   only when crossing into a new page, and refuses to run off the end of
-   the caller's mapped memory looking for a terminator that isn't there. */
 int paging_user_str_ok(uint32_t addr, uint32_t maxlen) {
     if (!addr) return 0;
     uint32_t last_page = 0xFFFFFFFFu;
@@ -296,18 +238,6 @@ void paging_init(uint32_t mem_kb) {
     pmm_init(mem_kb);
     kmemset(page_dir, 0, sizeof(page_dir));
 
-    /* Identity-map ALL physical RAM at boot, not just a fixed 16MB (4
-       tables) - pmm_alloc() hands out frames anywhere up to mem_kb, and a
-       lot of kernel code (paging_clone_dir() in particular) treats
-       whatever pmm_alloc() returns as a directly-dereferenceable kernel
-       pointer ((void*)phys), relying on that identity mapping already
-       being there. With only 16MB mapped, that assumption silently held
-       right up until enough physical memory had actually been consumed to
-       push pmm_alloc() past the 16MB mark - real, reproducible bug: a
-       second fork()+execve() cycle (the first already eats several MB
-       between the clone, the ELF pages and both stacks) reliably crossed
-       that boundary and kmemcpy'd straight into unmapped memory, page
-       faulting at exactly CR2=0x1000000. */
     uint32_t table_bytes = 4u * 1024 * 1024;
     uint32_t needed = (mem_kb * 1024 + table_bytes - 1) / table_bytes;
     if (needed < 4) needed = 4;
@@ -365,7 +295,6 @@ void *vmalloc(uint32_t size) {
     for (uint32_t off = 0; off < size; off += PAGE_SIZE) {
         uint32_t phys = pmm_alloc();
         if (!phys) {
-
             for (uint32_t r = 0; r < off; r += PAGE_SIZE)
                 paging_unmap(virt + r);
             return 0;
@@ -394,7 +323,6 @@ void vmfree(void *ptr) {
 }
 
 int vmalloc_copy_on_write(uint32_t virt) {
-
     uint32_t *pte = pte_ptr(virt & ~0xFFF, 0);
     if (!pte || !(*pte & PAGE_PRESENT)) return 0;
     uint32_t phys = *pte & ~0xFFF;
@@ -420,7 +348,6 @@ static void page_fault_handler(registers_t *r) {
         if (pte && (*pte & PAGE_COW)) {
             uint32_t old_phys = *pte & ~0xFFF;
             if (pmm_refcount(old_phys) > 1) {
-
                 uint32_t new_phys = pmm_alloc();
                 if (new_phys) {
                     kmemcpy((void *)new_phys, (void *)old_phys, PAGE_SIZE);
@@ -432,7 +359,6 @@ static void page_fault_handler(registers_t *r) {
                     return;
                 }
             } else {
-
                 *pte = (*pte & ~PAGE_COW) | PAGE_WRITE;
                 tlb_flush_page(page);
                 cow_count++;

@@ -41,15 +41,14 @@ int x509_extract_rsa_pubkey(const uint8_t *cert_der, uint32_t cert_len,
     const uint8_t *p = tbs.content, *pend = tbs.next;
     asn1_tlv_t field;
 
-    /* version [0] EXPLICIT - optional */
     if (asn1_parse_tlv(p, pend, &field) != 0) return -1;
     if (field.tag == 0xA0) { p = field.next; if (asn1_parse_tlv(p, pend, &field) != 0) return -1; }
-    p = field.next;                                          /* serialNumber */
-    if (asn1_parse_tlv(p, pend, &field) != 0) return -1; p = field.next;  /* signature alg */
-    if (asn1_parse_tlv(p, pend, &field) != 0) return -1; p = field.next;  /* issuer */
-    if (asn1_parse_tlv(p, pend, &field) != 0) return -1; p = field.next;  /* validity */
-    if (asn1_parse_tlv(p, pend, &field) != 0) return -1; p = field.next;  /* subject */
-    if (asn1_parse_tlv(p, pend, &field) != 0 || field.tag != 0x30) return -1; /* subjectPublicKeyInfo */
+    p = field.next;
+    if (asn1_parse_tlv(p, pend, &field) != 0) return -1; p = field.next;
+    if (asn1_parse_tlv(p, pend, &field) != 0) return -1; p = field.next;
+    if (asn1_parse_tlv(p, pend, &field) != 0) return -1; p = field.next;
+    if (asn1_parse_tlv(p, pend, &field) != 0) return -1; p = field.next;
+    if (asn1_parse_tlv(p, pend, &field) != 0 || field.tag != 0x30) return -1;
 
     asn1_tlv_t alg, pubkey_bits;
     if (asn1_parse_tlv(field.content, field.next, &alg) != 0) return -1;

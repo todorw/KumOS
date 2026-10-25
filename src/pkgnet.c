@@ -91,9 +91,7 @@ static uint8_t *http_fetch(const char *path, uint32_t *body_off, uint32_t *body_
             total += (uint32_t)n;
             buf[total] = 0;
             idle = 0;
-            /* draining the recv ring may have reopened the TCP window;
-               push a fresh ACK so the sender learns about it right away
-               instead of stalling until more data happens to arrive */
+
             tcp_send(s, 0, 0);
 
             if (header_end < 0) {

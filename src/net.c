@@ -305,8 +305,7 @@ void net_poll(void) {
         uint16_t rx_status = *(uint16_t*)p;
         uint16_t pkt_len = *(uint16_t*)(p+2);
         if (!(rx_status & 1) || pkt_len < 18 || pkt_len > 1518) break;
-        /* pkt_len as reported by the NIC includes the trailing 4-byte
-           CRC, which isn't part of the actual frame data */
+
         uint16_t frame_len = (uint16_t)(pkt_len >= 4 ? pkt_len - 4 : 0);
         uint8_t *payload = p+4;
         rx_packets++;
@@ -558,12 +557,7 @@ void tcp_process(uint8_t *frame, uint16_t len) {
         }
         if (s->state==TCP_ESTABLISHED) {
             uint8_t doff = (uint8_t)((tcp->data_offset>>4)*4);
-            /* derive the real TCP payload length from the IP header's own
-               total_len field, not from the ethernet frame length - small
-               segments get padded to ethernet's 60-byte minimum frame size,
-               and computing length from the (possibly padded) frame instead
-               of the protocol's own length field turns that trailing zero
-               padding into phantom "payload" bytes */
+
             uint16_t ip_total = NET_HTONS(ip->total_len);
             uint16_t hdrs = (uint16_t)(20 + doff);
             uint16_t data_len = (ip_total > hdrs) ? (uint16_t)(ip_total - hdrs) : 0;
@@ -581,8 +575,7 @@ void tcp_process(uint8_t *frame, uint16_t len) {
                     }
                     s->ack += take;
                 }
-                /* fully-duplicate or out-of-order segment: drop the payload
-                   but still re-ACK our real position so the sender resyncs */
+
                 tcp_send_raw(s, TCP_ACK, 0, 0);
             }
             if (tcp->flags&TCP_FIN) {
