@@ -67,6 +67,9 @@ int  net_send_raw(const void *frame, uint16_t len);
 void net_poll(void);
 void net_print_info(void);
 void net_get_stats(uint32_t *tx_packets, uint32_t *rx_packets);
+void net_set_config(uint32_t ip, uint32_t gw, uint32_t mask);
+uint32_t net_get_gateway(void);
+void net_ip_to_str(uint32_t ip, char *out);
 
 #define NET_IP(a,b,c,d)  (((uint32_t)(a)<<24)|((uint32_t)(b)<<16)|((uint32_t)(c)<<8)|(uint32_t)(d))
 #define NET_HTONS(x)     ((uint16_t)(((x)>>8)|((x)<<8)))

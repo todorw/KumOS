@@ -108,7 +108,7 @@ int net_init(void) {
 
     outl(rtl_iobase+RTL_RBSTART, (uint32_t)rx_buf);
     outw(rtl_iobase+RTL_IMR, 0x0005);
-    outl(rtl_iobase+RTL_RCR, 0x0000000F);
+    outl(rtl_iobase+RTL_RCR, 0x0000008F);
     outl(rtl_iobase+RTL_TCR, 0x03000700);
     outb(rtl_iobase+RTL_CMD, 0x0C);
 
@@ -126,6 +126,7 @@ uint32_t net_get_ip(void) { return my_ip; }
 int net_send_raw(const void *frame, uint16_t len) {
     if (!rtl_ready_flag || len > TX_BUF_SIZE) return -1;
     kmemcpy(tx_buf[tx_idx], frame, len);
+    if (len < 60) { kmemset(tx_buf[tx_idx] + len, 0, 60u - len); len = 60; }
     outl(rtl_iobase+RTL_TSD0+tx_idx*4, len);
     tx_idx = (tx_idx+1) % TX_BUFS;
     int tries=10000;
@@ -177,6 +178,33 @@ static void send_arp_request(uint32_t target_ip) {
     net_send_raw(frame,42);
 }
 
+static uint32_t next_hop(uint32_t dst_ip) {
+    return ((dst_ip & net_mask) == (my_ip & net_mask)) ? dst_ip : gw_ip;
+}
+
+static void resolve_mac(uint32_t dst_ip, uint8_t mac[ETH_ALEN], int may_wait) {
+    if (dst_ip == 0xFFFFFFFF) { kmemset(mac, 0xFF, ETH_ALEN); return; }
+    uint32_t hop = next_hop(dst_ip);
+    if (arp_lookup(hop, mac)) return;
+    send_arp_request(hop);
+    if (may_wait) {
+        for (int i = 0; i < 10; i++) {
+            timer_sleep(10);
+            net_poll();
+            if (arp_lookup(hop, mac)) return;
+        }
+    }
+    kmemset(mac, 0xFF, ETH_ALEN);
+}
+
+void net_set_config(uint32_t ip, uint32_t gw, uint32_t mask) {
+    if (ip)   my_ip = ip;
+    if (gw)   gw_ip = gw;
+    if (mask) net_mask = mask;
+}
+
+uint32_t net_get_gateway(void) { return gw_ip; }
+
 typedef struct {
     uint8_t  type;
     uint8_t  code;
@@ -197,13 +225,7 @@ int net_send_icmp_echo(uint32_t dst_ip, uint16_t id, uint16_t seq,
                        const void *payload, uint16_t plen) {
     if (!rtl_ready_flag) return -1;
     uint8_t dst_mac[ETH_ALEN];
-    uint32_t nexthop = ((dst_ip & NET_HTONL(net_mask)) == (my_ip & NET_HTONL(net_mask)))
-                       ? dst_ip : gw_ip;
-    if (!arp_lookup(nexthop, dst_mac)) {
-        send_arp_request(nexthop);
-        timer_sleep(50);
-        if (!arp_lookup(nexthop, dst_mac)) kmemset(dst_mac,0xFF,ETH_ALEN);
-    }
+    resolve_mac(dst_ip, dst_mac, 1);
     if (plen > 1400) plen = 1400;
     uint16_t icmp_len = 8 + plen;
     uint16_t ip_len   = 20 + icmp_len;
@@ -244,14 +266,9 @@ int net_icmp_poll_reply(uint32_t *from_ip, uint16_t *id, uint16_t *seq, uint8_t 
 int net_send_udp(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
                  const void *data, uint16_t data_len) {
     if (!rtl_ready_flag) return -1;
+    if (data_len > 1472) return -1;
     uint8_t dst_mac[ETH_ALEN];
-    uint32_t nexthop = ((dst_ip & NET_HTONL(net_mask)) == (my_ip & NET_HTONL(net_mask)))
-                       ? dst_ip : gw_ip;
-    if (!arp_lookup(nexthop, dst_mac)) {
-        send_arp_request(nexthop);
-        timer_sleep(50);
-        if (!arp_lookup(nexthop, dst_mac)) kmemset(dst_mac,0xFF,ETH_ALEN);
-    }
+    resolve_mac(dst_ip, dst_mac, 1);
     uint16_t ip_len  = 20 + 8 + data_len;
     uint16_t udp_len = 8 + data_len;
     uint8_t  pkt[1500];
@@ -285,8 +302,9 @@ void net_poll(void) {
     while (!(inb(rtl_iobase+RTL_CMD)&0x01)) {
         uint16_t off = inw(rtl_iobase+RTL_CAPR)+16;
         uint8_t *p = rx_buf + (off % (8192+16));
+        uint16_t rx_status = *(uint16_t*)p;
         uint16_t pkt_len = *(uint16_t*)(p+2);
-        if (pkt_len==0||pkt_len>1514) break;
+        if (!(rx_status & 1) || pkt_len < 18 || pkt_len > 1518) break;
         /* pkt_len as reported by the NIC includes the trailing 4-byte
            CRC, which isn't part of the actual frame data */
         uint16_t frame_len = (uint16_t)(pkt_len >= 4 ? pkt_len - 4 : 0);
@@ -354,12 +372,14 @@ void net_print_info(void) {
         if(i<5) vga_putchar(':');
     }
     vga_putchar('\n');
-    vga_puts("  IP:   10.0.2.15\n");
-    vga_puts("  GW:   10.0.2.2\n");
-    vga_puts("  QEMU: -nic user\n\n");
+    char b[16];
+    vga_puts("  IP:   "); net_ip_to_str(my_ip, b); vga_puts(b);
+    vga_puts("\n  GW:   "); net_ip_to_str(gw_ip, b); vga_puts(b);
+    vga_puts("\n\n");
 }
 
 #define TCP_MAX_SOCKETS  8
+#define TCP_MSS          1460
 #define TCP_BUF_SIZE     16384
 
 typedef enum {
@@ -412,8 +432,9 @@ static void tcp_send_raw(tcp_socket_t *s, uint8_t flags,
     uint16_t tcp_len = 20 + dlen;
     uint16_t ip_len  = 20 + tcp_len;
 
+    if (dlen > TCP_MSS) dlen = TCP_MSS;
     uint8_t dst_mac[ETH_ALEN];
-    if (!arp_lookup(s->remote_ip, dst_mac)) kmemset(dst_mac,0xFF,ETH_ALEN);
+    resolve_mac(s->remote_ip, dst_mac, 0);
 
     eth_hdr_t *eth=(eth_hdr_t*)pkt;
     kmemcpy(eth->dst,dst_mac,ETH_ALEN);
@@ -463,8 +484,8 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port) {
     tcp_sockets[s].seq        = 0x1000;
     tcp_sockets[s].state      = TCP_SYN_SENT;
 
-    send_arp_request(dst_ip);
-    for (int i=0;i<20;i++) { net_poll(); timer_sleep(5); }
+    uint8_t mac[ETH_ALEN];
+    resolve_mac(dst_ip, mac, 1);
     tcp_send_raw(&tcp_sockets[s], TCP_SYN, 0, 0);
 
     for (int tries=0; tries<500; tries++) {
@@ -479,7 +500,15 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port) {
 int tcp_send(int s, const void *data, uint16_t len) {
     if (s<0||s>=TCP_MAX_SOCKETS||!tcp_sockets[s].used) return -1;
     if (tcp_sockets[s].state!=TCP_ESTABLISHED) return -1;
-    tcp_send_raw(&tcp_sockets[s], TCP_ACK, data, len);
+    if (!len) { tcp_send_raw(&tcp_sockets[s], TCP_ACK, 0, 0); return 0; }
+    const uint8_t *p = (const uint8_t *)data;
+    uint16_t left = len;
+    while (left) {
+        uint16_t chunk = left > TCP_MSS ? TCP_MSS : left;
+        tcp_send_raw(&tcp_sockets[s], TCP_ACK, p, chunk);
+        p += chunk;
+        left = (uint16_t)(left - chunk);
+    }
     return len;
 }
 
@@ -566,4 +595,16 @@ void tcp_process(uint8_t *frame, uint16_t len) {
         }
         return;
     }
+}
+
+void net_ip_to_str(uint32_t ip, char *out) {
+    int p = 0;
+    for (int i = 3; i >= 0; i--) {
+        uint32_t o = (ip >> (i * 8)) & 0xFF;
+        if (o >= 100) out[p++] = (char)('0' + o / 100);
+        if (o >= 10)  out[p++] = (char)('0' + (o / 10) % 10);
+        out[p++] = (char)('0' + o % 10);
+        if (i) out[p++] = '.';
+    }
+    out[p] = 0;
 }
