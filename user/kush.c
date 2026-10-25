@@ -548,6 +548,7 @@ typedef struct {
 static kush_job_t g_jobs[KUSH_MAX_JOBS];
 static int g_next_job_id = 1;
 static int g_bg_next = 0;
+static int g_exec_direct = 0;
 
 static int job_add(int pid, const char *cmd) {
     for (int i = 0; i < KUSH_MAX_JOBS; i++) {
@@ -678,7 +679,7 @@ static int do_exec(char *argv[], int argc) {
 
     if (!strchr(upper, '.')) { strcat(upper, ".ELF"); }
 
-    int pid = sys_fork();
+    int pid = g_exec_direct ? 0 : sys_fork();
     if (pid < 0) { printf("kush: fork failed\n"); return 1; }
     if (pid == 0) {
         sys_signal(2, 0);
@@ -998,58 +999,64 @@ static int run_pipeline(char *line) {
         }
     }
 
+    int pids[8]; int npids = 0;
     int prev_read = -1;
-    int last_ret = 0;
     for (int i = 0; i < nparts; i++) {
         char *argv[ARG_MAX]; int argc = split(parts[i], argv, ARG_MAX);
-        if (!argc) { if (prev_read >= 0) close(prev_read); return 0; }
-
         int is_first = (i == 0);
         int is_last  = (i == nparts - 1);
 
         char *out_file = 0, *in_file = 0; int append = 0;
         if (is_first || is_last) parse_redir(argv, &argc, &out_file, &append, &in_file);
-        if (!argc) { if (prev_read >= 0) close(prev_read); return 0; }
 
         int pipefd[2] = {-1, -1};
         if (!is_last && sys_pipe(pipefd) < 0) {
-            fputs("pipe failed\n");
-            if (prev_read >= 0) close(prev_read);
-            return 1;
-        }
-        int saved_stdin = -1, saved_stdout = -1;
-        int redir_out_fd = -1, redir_in_fd = -1;
-
-        if (prev_read >= 0) {
-            saved_stdin = sys_dup2(0, 11);
-            sys_dup2(prev_read, 0);
-            close(prev_read);
-        } else if (in_file) {
-            redir_in_fd = open(in_file);
-            if (redir_in_fd < 0) { printf("kush: %s: not found\n", in_file); return 1; }
-            saved_stdin = sys_dup2(0, 13);
-            sys_dup2(redir_in_fd, 0);
+            fputs("kush: pipe failed\n");
+            break;
         }
 
+        int pid = sys_fork();
+        if (pid == 0) {
+            sys_signal(2, 0);
+            sys_signal(20, 0);
+            if (prev_read >= 0) {
+                sys_dup2(prev_read, 0);
+                close(prev_read);
+            } else if (in_file) {
+                int fd = open(in_file);
+                if (fd < 0) { printf("kush: %s: not found\n", in_file); exit(1); }
+                sys_dup2(fd, 0);
+                close(fd);
+            }
+            if (!is_last) {
+                close(pipefd[0]);
+                sys_dup2(pipefd[1], 1);
+                close(pipefd[1]);
+            } else if (out_file) {
+                int fd = _syscall(SYS_OPEN, (int)out_file, O_WRONLY|O_CREAT|(append?O_APPEND:O_TRUNC), 0);
+                if (fd < 0) { printf("kush: can't open %s\n", out_file); exit(1); }
+                sys_dup2(fd, 1);
+                close(fd);
+            }
+            g_exec_direct = 1;
+            exit(argc ? dispatch_one(argv, argc) : 0);
+        }
+
+        if (prev_read >= 0) close(prev_read);
+        prev_read = -1;
         if (!is_last) {
-            saved_stdout = sys_dup2(1, 10);
-            sys_dup2(pipefd[1], 1);
             close(pipefd[1]);
-        } else if (out_file) {
-            redir_out_fd = _syscall(SYS_OPEN, (int)out_file, O_WRONLY|O_CREAT|(append?O_APPEND:O_TRUNC), 0);
-            if (redir_out_fd < 0) { printf("kush: can't open %s\n", out_file); return 1; }
-            saved_stdout = sys_dup2(1, 12);
-            sys_dup2(redir_out_fd, 1);
+            prev_read = pipefd[0];
         }
+        if (pid < 0) { fputs("kush: fork failed\n"); break; }
+        pids[npids++] = pid;
+    }
+    if (prev_read >= 0) close(prev_read);
 
-        last_ret = dispatch_one(argv, argc);
-
-        if (saved_stdout >= 0) { sys_dup2(saved_stdout, 1); close(saved_stdout); }
-        if (saved_stdin  >= 0) { sys_dup2(saved_stdin,  0); close(saved_stdin);  }
-        if (redir_out_fd >= 0) close(redir_out_fd);
-        if (redir_in_fd  >= 0) close(redir_in_fd);
-
-        prev_read = is_last ? -1 : pipefd[0];
+    int last_ret = 0;
+    for (int i = 0; i < npids; i++) {
+        int status = 0;
+        if (sys_waitstatus(pids[i], &status) == 1) last_ret = status;
     }
 
     if (pipeline_bg) exit(last_ret);
