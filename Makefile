@@ -25,7 +25,7 @@ KERN_OBJS = \
     src/timer.o src/sched.o src/paging.o \
     src/ata.o src/fat12.o src/pipe.o src/vfs.o \
     src/signal.o src/net.o src/procfs.o src/users.o \
-    src/dns.o src/dmesg.o src/dhcp.o src/ext2.o src/swap.o \
+    src/dns.o src/dmesg.o src/dhcp.o src/ext2.o \
     src/syscall.o src/elf.o \
     src/serial.o src/rtc.o src/mouse.o src/gui.o src/pkg.o src/pkgnet.o \
     src/sha256.o src/sha1.o src/aes.o src/bignum.o src/x509.o src/tls.o src/speaker.o src/browser.o src/kernel.o

@@ -33,7 +33,6 @@
 #include "dmesg.h"
 #include "dhcp.h"
 #include "ext2.h"
-#include "swap.h"
 #include "pkg.h"
 #include "pkgnet.h"
 
@@ -1126,11 +1125,6 @@ static void dispatch(const char *line) {
     else if(kstrcmp(cmd,"ps")==0){ vga_putchar('\n'); sched_list(); vga_putchar('\n'); }
     else if(kstrcmp(cmd,"meminfo")==0){ cmd_meminfo(); }
     else if(kstrcmp(cmd,"vmem")==0){ cmd_vmem(); }
-    else if(kstrcmp(cmd,"swapinfo")==0) {
-        kprintf("\n  Swap: %u/%u slots used (%uKB/%uKB)\n\n",
-                swap_used_slots(), (uint32_t)256,
-                swap_used_slots()*4, (uint32_t)256*4);
-    }
     else if(kstrcmp(cmd,"mmap")==0){ cmd_mmap(rest); }
     else if(kstrcmp(cmd,"pkg")==0){ cmd_pkg(rest); }
     else if(kstrcmp(cmd,"https")==0){ cmd_https(rest); }
@@ -1579,10 +1573,6 @@ void kernel_main(uint32_t magic, multiboot_info_t *mbi) {
         dmesg_log("ext2: mounted at /ext2");
     } else {
         serial_printf("[boot] No EXT2 volume on drive 1 (run 'eformat')\r\n");
-    }
-
-    if (swap_init() == 0) {
-        dmesg_log("swap: ready");
     }
 
     serial_printf("[boot] Enabling interrupts...\r\n");

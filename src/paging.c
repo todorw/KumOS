@@ -3,7 +3,6 @@
 #include "idt.h"
 #include "vga.h"
 #include "kstring.h"
-#include "swap.h"
 #include "sched.h"
 #include "serial.h"
 #include <stdint.h>
@@ -504,16 +503,6 @@ static void page_fault_handler(registers_t *r) {
                 *pte = (*pte & ~PAGE_COW) | PAGE_WRITE;
                 tlb_flush_page(page);
                 cow_count++;
-                fault_count++;
-                return;
-            }
-        }
-    }
-
-    if (!present) {
-        uint32_t page = fault_addr & ~0xFFF;
-        if (swap_is_swapped(page)) {
-            if (swap_in(page) == 0) {
                 fault_count++;
                 return;
             }
