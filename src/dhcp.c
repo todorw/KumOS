@@ -28,6 +28,7 @@ typedef struct {
 static uint32_t offered_ip  = 0;
 static uint32_t offered_gw  = 0;
 static uint32_t offered_dns = 0;
+static uint32_t offered_mask = 0;
 
 static void build_discover(dhcp_pkt_t *p, uint32_t xid, uint8_t mac[6]) {
     kmemset(p, 0, sizeof(dhcp_pkt_t));
@@ -72,7 +73,7 @@ static int parse_offer(dhcp_pkt_t *p, uint32_t *srv_ip) {
     uint8_t *o = p->options;
     uint8_t msg_type = 0;
     *srv_ip = 0;
-    while (*o != 255 && (o - p->options) < 308) {
+    while ((o - p->options) < 306 && *o != 255) {
         uint8_t tag = *o++;
         if (tag == 0) continue;
         uint8_t len = *o++;
@@ -80,6 +81,7 @@ static int parse_offer(dhcp_pkt_t *p, uint32_t *srv_ip) {
         else if (tag == 54 && len==4) *srv_ip = parse_ip(o);
         else if (tag == 3  && len>=4) offered_gw  = parse_ip(o);
         else if (tag == 6  && len>=4) offered_dns = parse_ip(o);
+        else if (tag == 1  && len==4) offered_mask = parse_ip(o);
         o += len;
     }
     if (msg_type == DHCP_OFFER || msg_type == DHCP_ACK) {
@@ -106,9 +108,10 @@ int dhcp_request(void) {
         timer_sleep(20);
         net_poll();
         uint8_t buf[sizeof(dhcp_pkt_t)+8];
+        kmemset(buf, 0, sizeof(buf));
         uint32_t from=0; uint16_t sport=0;
         int n = net_recv_udp(DHCP_PORT_CLI, buf, sizeof(buf), &from, &sport);
-        if (n < (int)sizeof(dhcp_pkt_t)) continue;
+        if (n < 240) continue;
         int type = parse_offer((dhcp_pkt_t*)buf, &srv_ip);
         if (type == DHCP_OFFER) {
             serial_printf("[dhcp] OFFER received: %u.%u.%u.%u\r\n",
@@ -123,6 +126,7 @@ int dhcp_request(void) {
                 (offered_ip>>8)&0xFF, offered_ip&0xFF,
                 (offered_gw>>24)&0xFF,(offered_gw>>16)&0xFF,
                 (offered_gw>>8)&0xFF, offered_gw&0xFF);
+            net_set_config(offered_ip, offered_gw, offered_mask);
             return 0;
         }
     }

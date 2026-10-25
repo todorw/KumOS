@@ -30,7 +30,7 @@ static int encode_name(const char *name, uint8_t *out) {
 }
 
 uint32_t dns_resolve(const char *hostname) {
-    if (!dns_server || !net_ready()) return 0;
+    if (!dns_server || !net_ready() || kstrlen(hostname) > 250) return 0;
 
     uint8_t pkt[512];
     kmemset(pkt, 0, sizeof(pkt));
@@ -79,6 +79,7 @@ uint32_t dns_resolve(const char *hostname) {
             if ((resp[rpos] & 0xC0) == 0xC0) rpos += 2;
             else { while (rpos < n && resp[rpos]) rpos += resp[rpos]+1; rpos++; }
 
+            if (rpos + 10 > n) break;
             uint16_t rtype  = (uint16_t)((resp[rpos]<<8)|resp[rpos+1]);
             uint16_t rdlen  = (uint16_t)((resp[rpos+8]<<8)|resp[rpos+9]);
             rpos += 10;
