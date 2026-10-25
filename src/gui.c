@@ -173,14 +173,7 @@ static confirm_kind_t confirm_pending = CONFIRM_NONE;
 static char           confirm_target_name[64];
 static int            confirm_target_pid;
 
-/* WIN_TERMINAL, specifically, doesn't run the toy dispatcher below - see
-   gui_set_boot_terminal_pid()/render_boot_terminal(). Declared here (file
-   scope, ahead of everything) since wm_close() needs to refuse closing it
-   while kush is still alive - closing its only visible window without
-   killing the process it's live-viewing would leave that task's blocking
-   read() competing with the GUI's own keyboard_getchar() for the same
-   queue with no window to route the result to. */
-static int boot_term_pid = -1;
+static int term_pid[VGA_TTYS] = { -1, -1, -1 };
 
 #define GUI_THEME_COUNT 3
 static const char *gui_theme_names[GUI_THEME_COUNT] = { "Sky", "Sunset", "Forest" };
@@ -821,10 +814,14 @@ static void wm_cycle_focus(void) {
 }
 
 static void files_refresh(void);
-static int  boot_term_alive(void);
+static int  term_alive(int tty);
+static void term_open_session(int tty);
+static void term_close_session(int tty);
 static void pkg_refresh(void);
 
 static void wm_open(int t, int defx, int defy, int defw, int defh) {
+    if (t >= WIN_TERMINAL && t <= WIN_TERMINAL3 && !term_alive(t - WIN_TERMINAL))
+        term_open_session(t - WIN_TERMINAL);
     if (!wins[t].active) {
         wins[t].active = 1;
         wins[t].x = defx; wins[t].y = defy; wins[t].w = defw; wins[t].h = defh;
@@ -838,7 +835,7 @@ static void wm_open(int t, int defx, int defy, int defw, int defh) {
 }
 
 static void wm_close(int t) {
-    if (t == WIN_TERMINAL && boot_term_alive()) return;
+    if (t >= WIN_TERMINAL && t <= WIN_TERMINAL3) term_close_session(t - WIN_TERMINAL);
     wins[t].active = 0;
     wm_remove_z(t);
 }
@@ -1010,76 +1007,11 @@ static void gui_apply_theme(void) {
     kmemcpy(desktop_cache, backbuf, GUI_WIDTH * GUI_HEIGHT);
 }
 
-#define TERM_W    680
-#define TERM_H    460
+#define TERM_W  654
+#define TERM_H  248
 
-/* WIN_TERMINAL's own default size, sized to exactly fit the real 80x25
-   VGA console it hosts (see render_boot_terminal()) rather than the toy
-   dispatcher's TERM_W/TERM_H grid: 80*8 + a few px padding wide,
-   25*9 + titlebar + a few px padding tall. */
-#define BOOT_TERM_W  654
-#define BOOT_TERM_H  248
-#define TERM_ROWS  48
-#define TERM_COLS  84
-
-#define TERM_BG       C_DARK_BLUE
-#define TERM_FG       C_WHITE
-#define TERM_FG_ECHO  C_LIGHT_CYAN
-#define TERM_FG_ERR   C_LIGHT_RED
-#define TERM_FG_OK    C_LIGHT_GREEN
-#define TERM_FG_INFO  C_YELLOW
-
-/* Multiple independent terminal windows (WIN_TERMINAL/2/3, see wintype_t):
-   all the terminal state that used to be bare globals - one singleton
-   terminal was all the window manager could ever open, "New Terminal" on
-   the desktop context menu just refocused it despite the label - now
-   lives per-instance here. term_cur selects which instance the term_*
-   helpers below operate on; every call site sets it right before calling
-   into them (render, keyboard routing, the Packages "Run" / launcher
-   shortcuts that inject a command into a specific terminal). */
-#define TERM_HIST 8
-#define MAX_TERMS 3
-
-typedef struct {
-    char    lines[TERM_ROWS][TERM_COLS+1];
-    uint8_t colors[TERM_ROWS];
-    int     row;
-    char    input[TERM_COLS+1];
-    int     icur;
-    char    hist[TERM_HIST][TERM_COLS+1];
-    int     hist_count;
-} term_t;
-
-static term_t terms[MAX_TERMS];
-static int    term_cur = 0;
-
-#define term_lines       (terms[term_cur].lines)
-#define term_colors      (terms[term_cur].colors)
-#define term_row         (terms[term_cur].row)
-#define term_input       (terms[term_cur].input)
-#define term_icur        (terms[term_cur].icur)
-#define term_hist        (terms[term_cur].hist)
-#define term_hist_count  (terms[term_cur].hist_count)
-
-static void term_init(int idx) {
-    int saved = term_cur; term_cur = idx;
-    for (int i=0;i<TERM_ROWS;i++) { term_lines[i][0]=0; term_colors[i]=TERM_FG; }
-    kstrcpy(term_lines[0], "KumOS GUI terminal"); term_colors[0]=TERM_FG_INFO;
-    kstrcpy(term_lines[1], "help for commands, exit to close"); term_colors[1]=TERM_FG_INFO;
-    term_row = 2;
-    term_input[0]=0; term_icur=0;
-    term_hist_count = 0;
-    term_cur = saved;
-}
-
-/* Real "New Terminal": opens the first inactive terminal slot (each one
-   its own independent window with its own scrollback/input/history),
-   offsetting position a bit per slot so they don't land exactly on top
-   of each other. Falls back to just focusing slot 0 if all 3 are already
-   open - a fixed small pool, not truly unbounded, but a real second/
-   third window where before this only ever refocused the same one. */
 static void wm_open_new_terminal(void) {
-    for (int i = 0; i < MAX_TERMS; i++) {
+    for (int i = 0; i < VGA_TTYS; i++) {
         if (!wins[WIN_TERMINAL + i].active) {
             wm_open(WIN_TERMINAL + i, 40 + i*24, 20 + i*24, TERM_W, TERM_H);
             return;
@@ -1088,361 +1020,77 @@ static void wm_open_new_terminal(void) {
     wm_open(WIN_TERMINAL, 40, 20, TERM_W, TERM_H);
 }
 
-static void term_scroll(void) {
-    for (int i=0;i<TERM_ROWS-1;i++) {
-        kstrcpy(term_lines[i], term_lines[i+1]);
-        term_colors[i] = term_colors[i+1];
-    }
-    term_lines[TERM_ROWS-1][0]=0;
-    if (term_row > 0) term_row--;
+void gui_set_terminal_pid(int tty, int pid) {
+    if (tty >= 0 && tty < VGA_TTYS) term_pid[tty] = pid;
 }
 
-static void term_puts_c(const char *s, uint8_t color) {
-    if (term_row >= TERM_ROWS) term_scroll();
-    kstrcpy(term_lines[term_row], s);
-    term_colors[term_row] = color;
-    term_row++;
-}
-
-static void term_puts(const char *s) { term_puts_c(s, TERM_FG); }
-
-/* captures a spawned ring-3 process's stdout/stderr into the terminal -
-   fd 1/2 normally go to vga_putchar (VGA text mode), which isn't the
-   visible surface while we're in graphics mode, so nothing would show up
-   otherwise. registered as the stdout sink only for the duration of an
-   exec/run command (see below), one line at a time. */
-static char    term_exec_linebuf[TERM_COLS+1];
-static int     term_exec_linelen = 0;
-
-static void term_exec_output(char c) {
-    if (c == '\n') {
-        term_exec_linebuf[term_exec_linelen] = 0;
-        term_puts(term_exec_linebuf);
-        term_exec_linelen = 0;
-    } else if (c != '\r' && term_exec_linelen < TERM_COLS) {
-        term_exec_linebuf[term_exec_linelen++] = c;
-    }
-}
-
-static void term_run_elf(const char *fname, const char *name) {
-    const char *argv[1] = { name };
-    int pid = elf_run(fname, 1, argv, -1);
-    if (pid < 0) { term_puts_c("spawn failed", TERM_FG_ERR); return; }
-
-    term_exec_linelen = 0;
-    vfs_set_stdout_sink(term_exec_output);
-    int code = sched_waitpid(pid);
-    /* sched_waitpid()'s busy-wait resumes this task via switch_context()'s
-       raw popfd/ret, not an interrupt's iret - it only comes back with
-       interrupts on if something else along the way (a syscall ISR
-       epilogue, say) eventually irets and restores them. Called straight
-       from the GUI's own loop (no such ISR above it), that never happens:
-       the popfd just replays whatever IF was live at the cli right before
-       the switch, which is always 0. Same root cause as the kernel.c
-       boot-flow hang below - explicit sti needed at every call site that
-       isn't itself inside an interrupt. */
-    __asm__ volatile("sti");
-    vfs_set_stdout_sink(0);
-    if (term_exec_linelen > 0) {
-        term_exec_linebuf[term_exec_linelen] = 0;
-        term_puts(term_exec_linebuf);
-        term_exec_linelen = 0;
-    }
-
-    char line[TERM_COLS+1];
-    kstrcpy(line, "exited, code "); kitoa((uint32_t)code, line+kstrlen(line), 10);
-    term_puts_c(line, TERM_FG_INFO);
-}
-
-static void term_split(const char *line, char *first, char *rest, int firstlen) {
-    int i=0;
-    while (*line && *line!=' ' && i<firstlen-1) first[i++]=*line++;
-    first[i]=0;
-    while (*line==' ') line++;
-    kstrcpy(rest, line);
-}
-
-static void term_itoa_signed(int v, char *out) {
-    int pos=0;
-    if (v<0) out[pos++]='-';
-    char tmp[12];
-    kitoa((uint32_t)(v<0?-v:v), tmp, 10);
-    kstrcpy(out+pos, tmp);
-}
-
-static int term_calc(const char *e) {
-    int a=0,b=0,neg=0; const char *p=e;
-    while(*p==' ')p++; if(*p=='-'){neg=1;p++;}
-    while(*p>='0'&&*p<='9'){a=a*10+(*p-'0');p++;} if(neg)a=-a;
-    while(*p==' ')p++; if(!*p)return a;
-    char op=*p++; while(*p==' ')p++;
-    neg=0; if(*p=='-'){neg=1;p++;}
-    while(*p>='0'&&*p<='9'){b=b*10+(*p-'0');p++;} if(neg)b=-b;
-    switch(op){case '+':return a+b;case '-':return a-b;
-               case '*':return a*b;case '/':return b?a/b:0;
-               case '%':return b?a%b:0;} return 0;
-}
-
-/* WIN_TERMINAL, specifically, doesn't run the toy dispatcher below -
-   kernel_main() spawns the real kush.elf that used to own the whole
-   screen before the GUI took over, hands its pid here, and this window
-   just becomes a live view onto vga.c's real console (see vga.c's
-   vmem()/shadow_mem - kush's own printf/ANSI output lands there exactly
-   like it always has, just redirected off real 0xB8000 while the GUI
-   owns the display). Real coreutils, real pipes, real job control, the
-   actual boot shell - not a second, smaller command set. */
-void gui_set_terminal_pid(int tty, int pid) { if (tty == 0) boot_term_pid = pid; }
-
-static int boot_term_alive(void) {
-    if (boot_term_pid < 0) return 0;
-    task_t *t = sched_get_task(boot_term_pid);
+static int term_alive(int tty) {
+    if (term_pid[tty] < 0) return 0;
+    task_t *t = sched_get_task(term_pid[tty]);
     return t && t->state != TASK_DEAD && t->state != TASK_ZOMBIE;
 }
 
-/* keyboard_getchar_blocking()/keyboard_getline() (kush's real read(), and
-   anything it in turn spawns) call this before ever touching the shared
-   keyboard queue. Without it, kush is ALWAYS trying to consume the next
-   keystroke while it's idle at a prompt, focused window or not - it has
-   no concept of GUI focus at all, so it raced the GUI's own
-   keyboard_getchar() poll for every key typed into any OTHER window
-   (confirmed live: characters meant for a Calculator window that had
-   just been given focus kept landing in the terminal instead). Gating
-   kush's side on real focus, and skipping the GUI's own poll while the
-   terminal has focus (see gui_run()'s host_focused), makes exactly one
-   side own the queue at a time. Returns 1 (unrestricted) before the GUI
-   has even started, so the old pre-GUI boot flow and the post-GUI-exit
-   bare CLI fallback both behave exactly as before. */
-int gui_ring3_input_focused(void) {
-    if (!gui_active) return 1;
-    return wm_topmost() == WIN_TERMINAL;
+static void term_open_session(int tty) {
+    vga_tty_reset(tty);
+    const char *argv[1] = { "kush" };
+    term_pid[tty] = elf_run("KUSH.ELF", 1, argv, tty);
 }
 
-static void render_boot_terminal(winrec_t *w) {
-    gui_window(w->x, w->y, w->w, w->h, "Terminal");
-    gui_rect_fill(w->x+1, w->y+12, w->w-2, w->h-13, C_BLACK);
+static void term_close_session(int tty) {
+    for (int i = 2; i < sched_task_count(); i++) {
+        task_t *t = sched_task_at(i);
+        if (t && t->pid && t->tty == tty && t->state != TASK_DEAD && t->state != TASK_ZOMBIE)
+            signal_send(t->pid, SIGKILL);
+    }
+    term_pid[tty] = -1;
+}
 
-    if (boot_term_pid < 0) {
-        gui_puts(w->x+8, w->y+18, "KUSH.ELF not found on disk.", C_LIGHT_RED, C_BLACK);
+static int focused_tty(void) {
+    int top = wm_topmost();
+    return (top >= WIN_TERMINAL && top <= WIN_TERMINAL3) ? top - WIN_TERMINAL : -1;
+}
+
+int gui_ring3_input_focused(void) {
+    if (!gui_active) return 1;
+    return focused_tty() == sched_current()->tty;
+}
+
+static void render_terminal(winrec_t *w, int tty) {
+    gui_window(w->x, w->y, w->w, w->h, win_title(WIN_TERMINAL + tty));
+    gui_rect_fill(w->x+1, w->y+12, w->w-2, w->h-13, C_BLACK);
+    int tx = w->x+4, ty = w->y+13;
+
+    if (!term_alive(tty)) {
+        gui_puts(tx, ty+2, "Session ended. Press any key for a new shell.", C_LIGHT_GREY, C_BLACK);
         return;
     }
 
-    const uint16_t *vb = vga_shadow_buffer();
-    int tx = w->x+4, ty = w->y+13;
-    for (int row = 0; row < VGA_HEIGHT; row++) {
-        for (int col = 0; col < VGA_WIDTH; col++) {
-            uint16_t entry = vb[row*VGA_WIDTH + col];
-            uint8_t ch  = (uint8_t)(entry & 0xFF);
-            uint8_t fg  = (uint8_t)(entry >> 8) & 0x0F;
-            uint8_t bg  = (uint8_t)(entry >> 12) & 0x0F;
-            if (ch != ' ' || bg != C_BLACK)
-                gui_putchar(tx+col*8, ty+row*9, (char)ch, fg, bg);
+    const uint16_t *vb = vga_tty_buffer(tty);
+    int rows = (w->h - 14) / 9; if (rows > VGA_HEIGHT) rows = VGA_HEIGHT;
+    int cols = (w->w - 6) / 8;  if (cols > VGA_WIDTH)  cols = VGA_WIDTH;
+    for (int row = 0; row < rows; row++) {
+        for (int col = 0; col < cols; col++) {
+            uint16_t e = vb[row*VGA_WIDTH + col];
+            uint8_t ch = (uint8_t)(e & 0xFF);
+            uint8_t fg = (uint8_t)(e >> 8) & 0x0F;
+            uint8_t bg = (uint8_t)(e >> 12) & 0x0F;
+            if (ch != ' ' || bg != C_BLACK) gui_putchar(tx+col*8, ty+row*9, (char)ch, fg, bg);
         }
     }
 
-    if (boot_term_alive() && vga_cursor_visible() && ((timer_ticks()/50)&1)) {
-        int cr = vga_get_row(), cc = vga_get_col();
+    int cr, cc;
+    if (vga_tty_cursor(tty, &cr, &cc) && cr < rows && cc < cols && ((timer_ticks()/50)&1))
         gui_rect_fill(tx+cc*8, ty+cr*9, 7, 8, C_LIGHT_GREY);
-    }
 }
 
-static void render_terminal(winrec_t *w) {
-
-    gui_window(w->x, w->y, w->w, w->h, "Terminal");
-
-    gui_rect_fill(w->x+1, w->y+12, w->w-2, w->h-22, TERM_BG);
-
-    int tx = w->x+4, ty = w->y+13;
-    for (int i=0;i<TERM_ROWS-1;i++)
-        if (term_lines[i][0])
-            gui_puts(tx, ty + i*9, term_lines[i], term_colors[i], TERM_BG);
-
-    int iy = ty + (TERM_ROWS-1)*9;
-    gui_rect_fill(w->x+1, iy-1, w->w-2, 10, TERM_BG);
-    gui_puts(tx, iy, "> ", TERM_FG_INFO, TERM_BG);
-    gui_puts(tx+16, iy, term_input, TERM_FG, TERM_BG);
-
-    if ((timer_ticks() / 50) & 1)
-        gui_rect_fill(tx+16+term_icur*8, iy, 7, 8, C_LIGHT_GREY);
-}
-
-static void term_exec(const char *cmd) {
-    char line[TERM_COLS+1];
-    char num[12];
-
-    if (*cmd) {
-        if (term_hist_count < TERM_HIST) kstrcpy(term_hist[term_hist_count++], cmd);
-        else {
-            for (int i=0;i<TERM_HIST-1;i++) kstrcpy(term_hist[i], term_hist[i+1]);
-            kstrcpy(term_hist[TERM_HIST-1], cmd);
-        }
-    }
-
-    if (kstrcmp(cmd,"help")==0) {
-        term_puts_c("help date uptime clear history", TERM_FG_INFO);
-        term_puts_c("ls cat touch write rm <f>", TERM_FG_INFO);
-        term_puts_c("meminfo cpuinfo ps kill whoami", TERM_FG_INFO);
-        term_puts_c("echo calc pkg exit", TERM_FG_INFO);
-        term_puts_c("run <pkg>  exec <file.elf>", TERM_FG_INFO);
-    } else if (kstrcmp(cmd,"date")==0) {
-        rtc_time_t t = rtc_read();
-        char buf[24];
-        buf[0]='0'+t.year/1000; buf[1]='0'+(t.year/100)%10;
-        buf[2]='0'+(t.year/10)%10; buf[3]='0'+t.year%10;
-        buf[4]='-'; buf[5]='0'+t.month/10; buf[6]='0'+t.month%10;
-        buf[7]='-'; buf[8]='0'+t.day/10;   buf[9]='0'+t.day%10;
-        buf[10]=' ';buf[11]='0'+t.hour/10; buf[12]='0'+t.hour%10;
-        buf[13]=':';buf[14]='0'+t.minute/10;buf[15]='0'+t.minute%10;
-        buf[16]=':';buf[17]='0'+t.second/10;buf[18]='0'+t.second%10;
-        buf[19]=0;
-        term_puts(buf);
-    } else if (kstrcmp(cmd,"uptime")==0) {
-        uint32_t s=timer_seconds();
-        line[0]=0;
-        int i=10; num[11]=0;
-        if(!s){num[i--]='0';}else{uint32_t u=s;while(u){num[i--]='0'+u%10;u/=10;}}
-        kstrcpy(line,"Uptime: "); kstrcat(line,num+i+1); kstrcat(line,"s");
-        term_puts(line);
-    } else if (kstrcmp(cmd,"clear")==0) {
-        for(int i=0;i<TERM_ROWS;i++) term_lines[i][0]=0;
-        term_row=0;
-    } else if (kstrcmp(cmd,"history")==0) {
-        for (int i=0;i<term_hist_count;i++) {
-            char n2[4]; kitoa((uint32_t)(i+1),n2,10);
-            kstrcpy(line,n2); kstrcat(line,". "); kstrcat(line,term_hist[i]);
-            term_puts(line);
-        }
-    } else if (kstrcmp(cmd,"whoami")==0) {
-        user_t *u = users_get_current();
-        term_puts(u ? u->name : "unknown");
-    } else if (kstrcmp(cmd,"cpuinfo")==0) {
-        uint32_t eax,ebx,ecx,edx; char vendor[13];
-        __asm__ volatile("cpuid":"=a"(eax),"=b"(ebx),"=c"(ecx),"=d"(edx):"a"(0));
-        kmemcpy(vendor,&ebx,4); kmemcpy(vendor+4,&edx,4); kmemcpy(vendor+8,&ecx,4); vendor[12]=0;
-        kstrcpy(line,"CPU: "); kstrcat(line,vendor); term_puts(line);
-        __asm__ volatile("cpuid":"=a"(eax),"=b"(ebx),"=c"(ecx),"=d"(edx):"a"(1));
-        kstrcpy(line,"Features: ");
-        if(edx&(1<<0))  kstrcat(line,"FPU ");
-        if(edx&(1<<23)) kstrcat(line,"MMX ");
-        if(edx&(1<<25)) kstrcat(line,"SSE ");
-        if(edx&(1<<26)) kstrcat(line,"SSE2 ");
-        term_puts(line);
-    } else if (kstartswith(cmd,"calc ")) {
-        kstrcpy(line, "= "); term_itoa_signed(term_calc(cmd+5), line+2);
-        term_puts_c(line, TERM_FG_OK);
-    } else if (kstartswith(cmd,"kill ")) {
-        const char *p = cmd+5; int pid=0;
-        while(*p>='0'&&*p<='9'){pid=pid*10+(*p-'0');p++;}
-        while(*p==' ')p++;
-        int sig=15; if(*p){sig=0;while(*p>='0'&&*p<='9'){sig=sig*10+(*p-'0');p++;}}
-        if (!pid) term_puts_c("Usage: kill <pid> [sig]", TERM_FG_ERR);
-        else {
-            signal_send(pid, sig);
-            kstrcpy(line,"Signal sent to PID "); kitoa((uint32_t)pid,num,10); kstrcat(line,num);
-            term_puts_c(line, TERM_FG_OK);
-        }
-    } else if (kstrcmp(cmd,"pkg")==0 || kstrcmp(cmd,"pkg list")==0) {
-        for (int i=0;i<pkg_count();i++) {
-            kstrcpy(line, pkg_is_installed(i) ? "[x] " : "[ ] ");
-            kstrcat(line, pkg_name_at(i));
-            term_puts(line);
-        }
-    } else if (kstartswith(cmd,"pkg install ")) {
-        int r = pkg_install(cmd+12);
-        if (r==0) { kstrcpy(line,"Installed "); kstrcat(line,cmd+12); term_puts_c(line, TERM_FG_OK); }
-        else if (r==-1) term_puts_c("Unknown package", TERM_FG_ERR);
-        else if (r==-2) term_puts_c("No disk mounted", TERM_FG_ERR);
-        else term_puts_c("Install failed", TERM_FG_ERR);
-    } else if (kstartswith(cmd,"pkg remove ")) {
-        int r = pkg_remove(cmd+11);
-        if (r==0) { kstrcpy(line,"Removed "); kstrcat(line,cmd+11); term_puts_c(line, TERM_FG_OK); }
-        else if (r==-1) term_puts_c("Unknown package", TERM_FG_ERR);
-        else if (r==-2) term_puts_c("No disk mounted", TERM_FG_ERR);
-        else term_puts_c("Not installed", TERM_FG_ERR);
-    } else if (kstartswith(cmd,"run ")) {
-        int i = pkg_find_index(cmd+4);
-        if (i < 0) { term_puts_c("Unknown program (try 'pkg install' first)", TERM_FG_ERR); }
-        else {
-            term_run_elf(pkg_fname_at(i), cmd+4);
-        }
-    } else if (kstartswith(cmd,"exec ")) {
-        if (!fat12_mounted()) { term_puts_c("No disk mounted", TERM_FG_ERR); }
-        else {
-            term_run_elf(cmd+5, cmd+5);
-        }
-    } else if (kstrcmp(cmd,"ls")==0) {
-        if (!fat12_mounted()) {
-            term_puts_c("No disk mounted", TERM_FG_ERR);
-        } else {
-            fat12_entry_t ents[16];
-            int n = fat12_list(ents, 16);
-            if (n <= 0) term_puts("(empty)");
-            for (int i=0;i<n;i++) term_puts(ents[i].name);
-        }
-    } else if (kstrcmp(cmd,"meminfo")==0) {
-        kstrcpy(line,"heap "); kitoa(kmalloc_used()/1024,num,10); kstrcat(line,num);
-        kstrcat(line,"K/"); kitoa(kmalloc_free()/1024,num,10); kstrcat(line,num);
-        kstrcat(line,"K free");
-        term_puts(line);
-        kstrcpy(line,"frames "); kitoa(pmm_used(),num,10); kstrcat(line,num);
-        kstrcat(line,"/"); kitoa(pmm_total(),num,10); kstrcat(line,num);
-        term_puts(line);
-    } else if (kstrcmp(cmd,"ps")==0) {
-        int n = sched_task_count();
-        for (int i=0;i<n;i++) {
-            task_t *t = sched_task_at(i);
-            if (!t) continue;
-            kstrcpy(line,""); kitoa((uint32_t)t->pid,num,10);
-            kstrcat(line,num); kstrcat(line," "); kstrcat(line,t->name);
-            term_puts(line);
-        }
-    } else if (kstartswith(cmd,"echo ")) {
-        term_puts(cmd+5);
-    } else if (kstartswith(cmd,"touch ")) {
-        if (!fat12_mounted()) term_puts_c("No disk mounted", TERM_FG_ERR);
-        else if (fat12_write(cmd+6, "", 0)==0) {
-            kstrcpy(line,"Created "); kstrcat(line,cmd+6); term_puts_c(line, TERM_FG_OK);
-        } else term_puts_c("touch failed", TERM_FG_ERR);
-    } else if (kstartswith(cmd,"write ")) {
-        char fn[16], data[TERM_COLS+1];
-        term_split(cmd+6, fn, data, 16);
-        if (!*fn) term_puts_c("Usage: write <f> <data>", TERM_FG_ERR);
-        else if (!fat12_mounted()) term_puts_c("No disk mounted", TERM_FG_ERR);
-        else if (fat12_write(fn, data, kstrlen(data))==0) term_puts_c("Written", TERM_FG_OK);
-        else term_puts_c("write failed", TERM_FG_ERR);
-    } else if (kstartswith(cmd,"rm ")) {
-        if (!fat12_mounted()) term_puts_c("No disk mounted", TERM_FG_ERR);
-        else if (fat12_delete(cmd+3)==0) {
-            kstrcpy(line,"Deleted "); kstrcat(line,cmd+3); term_puts_c(line, TERM_FG_OK);
-        } else term_puts_c("rm: not found", TERM_FG_ERR);
-    } else if (kstartswith(cmd,"cat ")) {
-        if (!fat12_mounted()) {
-            term_puts_c("No disk mounted", TERM_FG_ERR);
-        } else {
-            uint8_t buf[128];
-            int n = fat12_read(cmd+4, buf, sizeof(buf)-1);
-            if (n < 0) {
-                kstrcpy(line,"not found: "); kstrcat(line,cmd+4); term_puts_c(line, TERM_FG_ERR);
-            } else {
-                buf[n]=0;
-                char *p=(char*)buf; char row[TERM_COLS+1]; int ri=0;
-                while (*p) {
-                    if (*p=='\n' || ri==TERM_COLS) {
-                        row[ri]=0; term_puts(row); ri=0;
-                        if (*p=='\n') p++;
-                        continue;
-                    }
-                    row[ri++]=*p++;
-                }
-                if (ri) { row[ri]=0; term_puts(row); }
-            }
-        }
-    } else if (kstrcmp(cmd,"exit")==0) {
-        wm_close(WIN_TERMINAL + term_cur);
-    } else if (*cmd) {
-        kstrcpy(line, "Unknown: "); kstrcat(line, cmd);
-        term_puts_c(line, TERM_FG_ERR);
-        speaker_beep(300, 100);
-    }
+static void term_run_command(const char *cmd) {
+    int tty = focused_tty();
+    for (int i = 0; i < VGA_TTYS && tty < 0; i++)
+        if (wins[WIN_TERMINAL + i].active) tty = i;
+    if (tty < 0) tty = 0;
+    wm_open(WIN_TERMINAL + tty, 40 + tty*24, 20 + tty*24, TERM_W, TERM_H);
+    keyboard_inject(cmd);
+    keyboard_inject("\n");
 }
 
 #define FILES_MAX    40
@@ -2593,11 +2241,6 @@ static int pkgwin_installed(int i) {
     return 0;
 }
 
-static const char *pkgwin_fname(int i) {
-    int n = pkg_count();
-    return (i < n) ? pkg_fname_at(i) : pkgnet_fname_at(i-n);
-}
-
 #define PKGWIN_ROW_H 9
 
 static void render_pkg(winrec_t *w) {
@@ -2655,21 +2298,8 @@ static void pkg_handle_click(winrec_t *w, int mx, int my) {
         if (pkg_selected < 0) { kstrcpy(pkg_status, "select one first"); return; }
         if (!pkgwin_installed(pkg_selected)) { kstrcpy(pkg_status, "install it first"); return; }
 
-        /* WIN_TERMINAL itself is the live real-kush view now (see
-           gui_set_boot_terminal_pid()) - its toy dispatcher/term_lines[]
-           aren't drawn there any more, so this runs in the second
-           terminal window instead. */
-        wm_open(WIN_TERMINAL2, 64, 44, TERM_W, TERM_H);
-        term_cur = 1;
-
-        char cmdbuf[TERM_COLS+1];
-        kstrcpy(cmdbuf, "exec "); kstrcat(cmdbuf, pkgwin_fname(pkg_selected));
-        char echo[TERM_COLS+3];
-        kstrcpy(echo, "> "); kstrcat(echo, cmdbuf);
-        term_puts_c(echo, TERM_FG_ECHO);
-        term_exec(cmdbuf);
-
-        kstrcpy(pkg_status, "ran in Terminal 2");
+        term_run_command(pkgwin_name(pkg_selected));
+        kstrcpy(pkg_status, "started in a terminal");
         return;
     }
     for (int i=0;i<total && i<maxrows;i++) {
@@ -2801,16 +2431,7 @@ static void launcher_open_wintype(int t) {
 }
 
 static void launcher_run_pkg(int pkg_idx) {
-    /* Same reasoning as the Packages window's own Run button above -
-       WIN_TERMINAL is the live real-kush view, not a toy-dispatcher slot. */
-    wm_open(WIN_TERMINAL2, 64, 44, TERM_W, TERM_H);
-    term_cur = 1;
-    char cmdbuf[TERM_COLS+1];
-    kstrcpy(cmdbuf, "exec "); kstrcat(cmdbuf, pkgwin_fname(pkg_idx));
-    char echo[TERM_COLS+3];
-    kstrcpy(echo, "> "); kstrcat(echo, cmdbuf);
-    term_puts_c(echo, TERM_FG_ECHO);
-    term_exec(cmdbuf);
+    term_run_command(pkgwin_name(pkg_idx));
 }
 
 static void draw_launcher(void) {
@@ -2923,12 +2544,11 @@ static int ctxmenu_hit(int mx, int my) {
 
 void gui_run(void) {
     gui_init();
-    for (int i=0;i<MAX_TERMS;i++) term_init(i);
     editor_init_buf();
 
     for (int i=0;i<WIN_COUNT;i++) wins[i].active = 0;
     zcount = 0;
-    wm_open(WIN_TERMINAL, 40, 20, BOOT_TERM_W, BOOT_TERM_H);
+    wm_open(WIN_TERMINAL, 40, 20, TERM_W, TERM_H);
 
     int prev_left = 0, prev_right = 0;
     int dragging = -1, drag_ox = 0, drag_oy = 0;
@@ -2950,8 +2570,7 @@ void gui_run(void) {
             int t = zorder[i];
             winrec_t *w = &wins[t];
             if (!w->active || w->minimized) continue;
-            if (t==WIN_TERMINAL) { render_boot_terminal(w); }
-            else if (t>WIN_TERMINAL && t<=WIN_TERMINAL3) { term_cur = t - WIN_TERMINAL; render_terminal(w); }
+            if (t>=WIN_TERMINAL && t<=WIN_TERMINAL3) render_terminal(w, t - WIN_TERMINAL);
             else if (t==WIN_FILES) render_files(w);
             else if (t==WIN_SYSMON) render_sysmon(w);
             else if (t==WIN_CALC) render_calc(w);
@@ -2986,14 +2605,8 @@ void gui_run(void) {
         gui_draw_cursor(mx, my);
         gui_flip();
 
-        /* WIN_TERMINAL hosting a live real kush (see render_boot_terminal())
-           must not have this loop steal characters out of the shared
-           keyboard queue on its behalf - kush's own blocking read() is the
-           one consuming them, running concurrently as its own task. Only
-           a real global override (Alt+Tab) is worth reaching in non-
-           destructively; everything else, including a plain Tab kush
-           itself uses for completion, has to reach kush untouched. */
-        int host_focused = (wm_topmost() == WIN_TERMINAL && boot_term_alive());
+        int ftty = focused_tty();
+        int host_focused = ftty >= 0 && term_alive(ftty);
         char key = 0;
         if (host_focused) {
             if (keyboard_check_alttab()) wm_cycle_focus();
@@ -3002,12 +2615,8 @@ void gui_run(void) {
         }
         if (key) {
             int top = wm_topmost();
-            if (top == WIN_TERMINAL && !boot_term_alive()) {
-                /* kush exited (or never started) and this is its window -
-                   any keystroke here relaunches it rather than leaving a
-                   dead, frozen terminal as the GUI's one and only shell. */
-                const char *kush_argv[1] = { "kush" };
-                boot_term_pid = elf_run("KUSH.ELF", 1, kush_argv, 0);
+            if (ftty >= 0 && !term_alive(ftty)) {
+                term_open_session(ftty);
             } else if (key == 27) {
                 if (ctxmenu_open) ctxmenu_open = 0;
                 else if (launcher_open) launcher_open = 0;
@@ -3031,20 +2640,6 @@ void gui_run(void) {
             } else if (key == 15 && top == WIN_WRITE) {
                 /* Ctrl+O -> 15 (0x0F, SI). */
                 write_open();
-            } else if (top > WIN_TERMINAL && top <= WIN_TERMINAL3) {
-                term_cur = top - WIN_TERMINAL;
-                if (key == '\n') {
-                    char echo[TERM_COLS+3];
-                    kstrcpy(echo, "> "); kstrcat(echo, term_input);
-                    term_puts_c(echo, TERM_FG_ECHO);
-                    term_exec(term_input);
-                    term_input[0]=0; term_icur=0;
-                } else if (key == '\b') {
-                    if (term_icur > 0) { term_icur--; term_input[term_icur]=0; }
-                } else if (term_icur < TERM_COLS-1) {
-                    term_input[term_icur++] = key;
-                    term_input[term_icur]   = 0;
-                }
             } else if (top == WIN_EDITOR) {
                 if (key == '\n') {
                     if (editor_row < EDIT_ROWS-1) {
@@ -3299,6 +2894,7 @@ void gui_run(void) {
         __asm__ volatile("hlt");
     }
 
+    for (int i = 0; i < VGA_TTYS; i++) term_close_session(i);
     gui_active = 0;
     gui_exit();
 }
